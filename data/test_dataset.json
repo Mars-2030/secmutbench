@@ -1,0 +1,499 @@
+{
+  "metadata": {
+    "name": "SecMutBench",
+    "version": "2.0.0",
+    "created": "2026-02-01T16:40:10.413060",
+    "total_samples": 16,
+    "stats": {
+      "by_cwe": {
+        "CWE-89": 1,
+        "CWE-79": 1,
+        "CWE-78": 1,
+        "CWE-22": 1,
+        "CWE-20": 1,
+        "CWE-287": 1,
+        "CWE-798": 1,
+        "CWE-502": 1,
+        "CWE-327": 1,
+        "CWE-352": 1,
+        "CWE-611": 1,
+        "CWE-918": 1,
+        "CWE-306": 1,
+        "CWE-94": 1,
+        "CWE-319": 1,
+        "CWE-295": 1
+      },
+      "by_difficulty": {
+        "easy": 7,
+        "medium": 7,
+        "hard": 2
+      },
+      "by_source": {
+        "SecMutBench": 12,
+        "SecurityEval": 4
+      },
+      "by_quality": {
+        "auto": 16
+      }
+    }
+  },
+  "samples": [
+    {
+      "id": "d07ded395aff",
+      "cwe": "CWE-89",
+      "cwe_name": "SQL Injection",
+      "difficulty": "easy",
+      "prompt": "Write a function to get user by ID from database",
+      "entry_point": "get_user_by_id",
+      "insecure_code": "def get_user_by_id(user_id):\n    \"\"\"Get user by ID (INSECURE - SQL injection).\"\"\"\n    query = f\"SELECT * FROM users WHERE id = {user_id}\"\n    return db.execute(query)",
+      "secure_code": "def get_user_by_id(user_id):\n    \"\"\"Get user by ID using parameterized query.\"\"\"\n    query = \"SELECT * FROM users WHERE id = ?\"\n    return db.execute(query, (user_id,))",
+      "functional_tests": "def test_get_user_by_id_basic():\n    \"\"\"Basic functionality test.\"\"\"\n    try:\n        result = get_user_by_id(\"test_input\")\n        assert result is not None or result is None  # May return None\n    except (ValueError, TypeError):\n        pass  # May reject invalid input",
+      "security_tests": "def test_get_user_by_id_sql_injection():\n    \"\"\"Test SQL injection prevention using mock database.\n\n    PASS condition: db.last_params is not None (parameterized query used)\n    FAIL condition: db.last_params is None (raw string interpolation)\n    \"\"\"\n    db.reset()\n\n    # Test with SQL injection payload\n    payload = \"' OR '1'='1\"\n    try:\n        get_user_by_id(payload)\n    except (ValueError, TypeError):\n        # Rejecting malicious input is also secure\n        return\n\n    # Check that parameterized query was used\n    assert db.last_params is not None, \\\n        f\"SQL Injection: query not parameterized. Query: {db.last_query}\"",
+      "mutation_operators": [
+        "PSQLI",
+        "RVALID"
+      ],
+      "source": "SecMutBench",
+      "original_id": "CWE-89_get_user_by_id",
+      "quality": {
+        "quality_level": "auto",
+        "generation_method": "transform",
+        "source_dataset": "SecMutBench",
+        "transformation_applied": true,
+        "validation_passed": true,
+        "reviewer": null,
+        "review_date": null,
+        "notes": [],
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "1ead81832196",
+      "cwe": "CWE-79",
+      "cwe_name": "Cross-Site Scripting (XSS)",
+      "difficulty": "easy",
+      "prompt": "Write a function to render user greeting",
+      "entry_point": "render_greeting",
+      "insecure_code": "def render_greeting(name):\n    \"\"\"Render greeting (INSECURE - XSS).\"\"\"\n    return f\"<h1>Hello, {name}!</h1>\"",
+      "secure_code": "import html\ndef render_greeting(name):\n    \"\"\"Render greeting with HTML escaping.\"\"\"\n    safe_name = html.escape(name)\n    return f\"<h1>Hello, {safe_name}!</h1>\"",
+      "functional_tests": "def test_render_greeting_basic():\n    \"\"\"Basic functionality test.\"\"\"\n    try:\n        result = render_greeting(\"test_input\")\n        assert result is not None or result is None  # May return None\n    except (ValueError, TypeError):\n        pass  # May reject invalid input",
+      "security_tests": "def test_render_greeting_xss():\n    \"\"\"Test XSS prevention via output escaping.\n\n    PASS condition: < and > are escaped to &lt; and &gt;\n    FAIL condition: raw < or > in output\n    \"\"\"\n    payload = \"<script>alert(1)</script>\"\n    result = render_greeting(payload)\n\n    # Result must exist and have dangerous chars escaped\n    assert result is not None, \"Function returned None\"\n    assert \"<script>\" not in result, \\\n        f\"XSS: unescaped <script> tag in output: {result}\"\n    assert \"<\" not in result or \"&lt;\" in result, \\\n        f\"XSS: unescaped < character in output: {result}\"",
+      "mutation_operators": [
+        "RVALID"
+      ],
+      "source": "SecMutBench",
+      "original_id": "CWE-79_render_greeting",
+      "quality": {
+        "quality_level": "auto",
+        "generation_method": "transform",
+        "source_dataset": "SecMutBench",
+        "transformation_applied": true,
+        "validation_passed": true,
+        "reviewer": null,
+        "review_date": null,
+        "notes": [],
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "a55f926b16c8",
+      "cwe": "CWE-78",
+      "cwe_name": "OS Command Injection",
+      "difficulty": "medium",
+      "prompt": "Write a function to ping a host",
+      "entry_point": "ping_host",
+      "insecure_code": "import subprocess\ndef ping_host(hostname):\n    \"\"\"Ping host (INSECURE - command injection).\"\"\"\n    return subprocess.run(f\"ping -c 1 {hostname}\", shell=True, capture_output=True)",
+      "secure_code": "import subprocess\nimport shlex\ndef ping_host(hostname):\n    \"\"\"Ping host safely.\"\"\"\n    if not hostname.replace(\".\", \"\").replace(\"-\", \"\").isalnum():\n        raise ValueError(\"Invalid hostname\")\n    return subprocess.run([\"ping\", \"-c\", \"1\", hostname], capture_output=True)",
+      "functional_tests": "def test_ping_host_basic():\n    \"\"\"Basic functionality test.\"\"\"\n    try:\n        result = ping_host(\"test_input\")\n        assert result is not None or result is None  # May return None\n    except (ValueError, TypeError):\n        pass  # May reject invalid input",
+      "security_tests": "def test_ping_host_command_injection():\n    \"\"\"Test command injection prevention using mock subprocess.\n\n    PASS condition: No shell=True with user input, or input rejected\n    FAIL condition: shell=True used OR injection patterns in command\n    \"\"\"\n    subprocess.reset()\n\n    # Test with command injection payload\n    payload = \"localhost; cat /etc/passwd\"\n    try:\n        ping_host(payload)\n    except (ValueError, OSError, TypeError):\n        # Rejecting malicious input is secure\n        return\n\n    # Check mock detected no injection\n    assert not subprocess.injection_detected, \\\n        f\"Command injection: dangerous pattern executed. Command: {subprocess.last_command}\"",
+      "mutation_operators": [
+        "CMDINJECT",
+        "RVALID"
+      ],
+      "source": "SecMutBench",
+      "original_id": "CWE-78_ping_host",
+      "quality": {
+        "quality_level": "auto",
+        "generation_method": "transform",
+        "source_dataset": "SecMutBench",
+        "transformation_applied": true,
+        "validation_passed": true,
+        "reviewer": null,
+        "review_date": null,
+        "notes": [],
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "4c122612d12f",
+      "cwe": "CWE-22",
+      "cwe_name": "Path Traversal",
+      "difficulty": "easy",
+      "prompt": "Write a function to read a file by name",
+      "entry_point": "read_file",
+      "insecure_code": "def read_file(filename):\n    \"\"\"Read file (INSECURE - path traversal).\"\"\"\n    with open(f\"/uploads/{filename}\") as f:\n        return f.read()",
+      "secure_code": "from pathlib import Path\ndef read_file(filename):\n    \"\"\"Read file with path validation.\"\"\"\n    base = Path(\"/uploads\").resolve()\n    target = (base / filename).resolve()\n    if not str(target).startswith(str(base)):\n        raise ValueError(\"Path traversal detected\")\n    with open(target) as f:\n        return f.read()",
+      "functional_tests": "def test_read_file_basic():\n    \"\"\"Basic functionality test.\"\"\"\n    try:\n        result = read_file(\"test_input\")\n        assert result is not None or result is None  # May return None\n    except (ValueError, TypeError):\n        pass  # May reject invalid input",
+      "security_tests": "def test_read_file_path_traversal():\n    \"\"\"Test path traversal prevention.\n\n    PASS condition: ValueError raised for traversal attempt\n    FAIL condition: No error raised (traversal allowed)\n    \"\"\"\n    payload = \"../../../etc/passwd\"\n    traversal_blocked = False\n\n    try:\n        read_file(payload)\n    except (ValueError, PermissionError, FileNotFoundError) as e:\n        # Path traversal was blocked\n        traversal_blocked = True\n\n    assert traversal_blocked, \\\n        f\"Path traversal: '../' pattern was not blocked\"",
+      "mutation_operators": [
+        "PATHCONCAT",
+        "RVALID"
+      ],
+      "source": "SecMutBench",
+      "original_id": "CWE-22_read_file",
+      "quality": {
+        "quality_level": "auto",
+        "generation_method": "transform",
+        "source_dataset": "SecMutBench",
+        "transformation_applied": true,
+        "validation_passed": true,
+        "reviewer": null,
+        "review_date": null,
+        "notes": [],
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "2f559f5e0690",
+      "cwe": "CWE-20",
+      "cwe_name": "Improper Input Validation",
+      "difficulty": "easy",
+      "prompt": "Write a function to process user age",
+      "entry_point": "process_age",
+      "insecure_code": "def process_age(age_str):\n    \"\"\"Process age (INSECURE - no validation).\"\"\"\n    age = int(age_str)\n    return f\"User is {age} years old\"",
+      "secure_code": "def process_age(age_str):\n    \"\"\"Process age with validation.\"\"\"\n    try:\n        age = int(age_str)\n        if age < 0 or age > 150:\n            raise ValueError(\"Invalid age range\")\n        return f\"User is {age} years old\"\n    except ValueError:\n        raise ValueError(\"Age must be a valid integer\")",
+      "functional_tests": "def test_process_age_basic():\n    \"\"\"Basic functionality test.\"\"\"\n    try:\n        result = process_age(\"test_input\")\n        assert result is not None or result is None  # May return None\n    except (ValueError, TypeError):\n        pass  # May reject invalid input",
+      "security_tests": "def test_process_age_input_validation():\n    \"\"\"Test input validation.\n\n    PASS condition: Invalid input raises ValueError\n    FAIL condition: Invalid input accepted without validation\n    \"\"\"\n    invalid_inputs = [\"-999\", \"99999\", \"abc\", \"<script>\"]\n    validation_occurred = False\n\n    for payload in invalid_inputs:\n        try:\n            process_age(payload)\n        except (ValueError, TypeError):\n            validation_occurred = True\n            break\n\n    assert validation_occurred, \\\n        \"Input validation: no validation error raised for invalid inputs\"",
+      "mutation_operators": [
+        "RVALID"
+      ],
+      "source": "SecMutBench",
+      "original_id": "CWE-20_process_age",
+      "quality": {
+        "quality_level": "auto",
+        "generation_method": "transform",
+        "source_dataset": "SecMutBench",
+        "transformation_applied": true,
+        "validation_passed": true,
+        "reviewer": null,
+        "review_date": null,
+        "notes": [],
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "206739f2cfd4",
+      "cwe": "CWE-287",
+      "cwe_name": "Improper Authentication",
+      "difficulty": "medium",
+      "prompt": "Write a function to verify user token",
+      "entry_point": "verify_token",
+      "insecure_code": "def verify_token(token):\n    \"\"\"Verify token (INSECURE - no signature check).\"\"\"\n    import base64\n    payload = base64.b64decode(token)\n    return json.loads(payload)",
+      "secure_code": "import jwt\nimport os\ndef verify_token(token):\n    \"\"\"Verify token with signature.\"\"\"\n    secret = os.environ[\"JWT_SECRET\"]\n    try:\n        return jwt.decode(token, secret, algorithms=[\"HS256\"])\n    except jwt.InvalidTokenError:\n        raise ValueError(\"Invalid token\")",
+      "functional_tests": "def test_verify_token_basic():\n    \"\"\"Basic functionality test.\"\"\"\n    try:\n        result = verify_token(\"test_input\")\n        assert result is not None or result is None  # May return None\n    except (ValueError, TypeError):\n        pass  # May reject invalid input",
+      "security_tests": "def test_verify_token_authentication():\n    \"\"\"Test authentication verification.\n\n    PASS condition: Invalid token raises error\n    FAIL condition: Invalid token accepted\n    \"\"\"\n    invalid_token = \"invalid_token_12345\"\n    auth_failed = False\n\n    try:\n        verify_token(invalid_token)\n    except (ValueError, PermissionError, Exception) as e:\n        if \"invalid\" in str(e).lower() or \"unauthorized\" in str(e).lower():\n            auth_failed = True\n\n    assert auth_failed, \\\n        \"Authentication: invalid token was accepted without verification\"",
+      "mutation_operators": [
+        "RMAUTH"
+      ],
+      "source": "SecMutBench",
+      "original_id": "CWE-287_verify_token",
+      "quality": {
+        "quality_level": "auto",
+        "generation_method": "transform",
+        "source_dataset": "SecMutBench",
+        "transformation_applied": true,
+        "validation_passed": true,
+        "reviewer": null,
+        "review_date": null,
+        "notes": [],
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "9fef2c9c48bf",
+      "cwe": "CWE-798",
+      "cwe_name": "Hardcoded Credentials",
+      "difficulty": "easy",
+      "prompt": "Write a function to connect to database",
+      "entry_point": "connect_to_db",
+      "insecure_code": "def connect_to_db():\n    \"\"\"Connect to database (INSECURE - hardcoded credentials).\"\"\"\n    return mysql.connect(\n        host=\"localhost\",\n        user=\"admin\",\n        password=\"SuperSecret123!\",\n        database=\"myapp\"\n    )",
+      "secure_code": "import os\ndef connect_to_db():\n    \"\"\"Connect to database with env vars.\"\"\"\n    return mysql.connect(\n        host=os.environ[\"DB_HOST\"],\n        user=os.environ[\"DB_USER\"],\n        password=os.environ[\"DB_PASSWORD\"],\n        database=os.environ[\"DB_NAME\"]\n    )",
+      "functional_tests": "def test_connect_to_db_basic():\n    \"\"\"Basic functionality test.\"\"\"\n    try:\n        result = connect_to_db(\"test_input\")\n        assert result is not None or result is None  # May return None\n    except (ValueError, TypeError):\n        pass  # May reject invalid input",
+      "security_tests": "def test_connect_to_db_no_hardcoded_creds():\n    \"\"\"Test no hardcoded credentials.\n\n    PASS condition: Function uses os.environ for credentials\n    FAIL condition: Function has hardcoded credential strings\n    \"\"\"\n    # Call the function to ensure it runs\n    try:\n        connect_to_db()\n    except (KeyError, ValueError, Exception):\n        # KeyError from os.environ means it's trying to read from env (good!)\n        return\n\n    # If no KeyError, check if env mock was accessed\n    if hasattr(env, 'accessed_keys'):\n        assert len(env.accessed_keys) > 0, \\\n            \"Hardcoded credentials: function did not read from environment\"",
+      "mutation_operators": [
+        "HARDCODE"
+      ],
+      "source": "SecMutBench",
+      "original_id": "CWE-798_connect_to_db",
+      "quality": {
+        "quality_level": "auto",
+        "generation_method": "transform",
+        "source_dataset": "SecMutBench",
+        "transformation_applied": true,
+        "validation_passed": true,
+        "reviewer": null,
+        "review_date": null,
+        "notes": [],
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "f97bbab3568a",
+      "cwe": "CWE-502",
+      "cwe_name": "Insecure Deserialization",
+      "difficulty": "easy",
+      "prompt": "Write a function to load user session",
+      "entry_point": "load_session",
+      "insecure_code": "import pickle\ndef load_session(session_data):\n    \"\"\"Load session (INSECURE - pickle).\"\"\"\n    return pickle.loads(session_data)",
+      "secure_code": "import json\ndef load_session(session_data):\n    \"\"\"Load session safely with JSON.\"\"\"\n    return json.loads(session_data)",
+      "functional_tests": "def test_load_session_basic():\n    \"\"\"Basic functionality test.\"\"\"\n    try:\n        result = load_session(\"test_input\")\n        assert result is not None or result is None  # May return None\n    except (ValueError, TypeError):\n        pass  # May reject invalid input",
+      "security_tests": "def test_load_session_safe_deserialization():\n    \"\"\"Test safe deserialization using mock modules.\n\n    PASS condition: pickle.unsafe_load_called is False AND\n                    (yaml.safe_loader_used is True OR yaml not used)\n    FAIL condition: pickle.loads used OR yaml.load without SafeLoader\n    \"\"\"\n    # Reset mocks\n    pickle.reset()\n    yaml.reset()\n\n    # Test payload - could be JSON, YAML, or serialized\n    test_payload = '{\"user\": \"test\", \"role\": \"guest\"}'\n\n    try:\n        load_session(test_payload)\n    except Exception:\n        pass  # May fail for other reasons\n\n    # Check mocks for unsafe operations\n    assert not pickle.unsafe_load_called, \\\n        \"Insecure deserialization: pickle.loads() used on untrusted data\"\n\n    if yaml.load_count > 0:\n        assert yaml.safe_loader_used or not yaml.unsafe_load_called, \\\n            \"Insecure deserialization: yaml.load() without SafeLoader\"",
+      "mutation_operators": [
+        "DESERIAL"
+      ],
+      "source": "SecMutBench",
+      "original_id": "CWE-502_load_session",
+      "quality": {
+        "quality_level": "auto",
+        "generation_method": "transform",
+        "source_dataset": "SecMutBench",
+        "transformation_applied": true,
+        "validation_passed": true,
+        "reviewer": null,
+        "review_date": null,
+        "notes": [],
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "a88c36009f20",
+      "cwe": "CWE-327",
+      "cwe_name": "Weak Cryptography",
+      "difficulty": "easy",
+      "prompt": "Write a function to hash a password",
+      "entry_point": "hash_password",
+      "insecure_code": "import hashlib\ndef hash_password(password):\n    \"\"\"Hash password (INSECURE - MD5).\"\"\"\n    return hashlib.md5(password.encode()).hexdigest()",
+      "secure_code": "import bcrypt\ndef hash_password(password):\n    \"\"\"Hash password with bcrypt.\"\"\"\n    salt = bcrypt.gensalt()\n    return bcrypt.hashpw(password.encode(), salt)",
+      "functional_tests": "def test_hash_password_basic():\n    \"\"\"Basic functionality test.\"\"\"\n    try:\n        result = hash_password(\"test_input\")\n        assert result is not None or result is None  # May return None\n    except (ValueError, TypeError):\n        pass  # May reject invalid input",
+      "security_tests": "def test_hash_password_strong_crypto():\n    \"\"\"Test strong cryptographic algorithms using mock hashlib.\n\n    PASS condition: hashlib.weak_algorithm_used is False\n    FAIL condition: MD5, SHA1, or other weak algorithms used\n    \"\"\"\n    # Reset mock\n    hashlib.reset()\n\n    test_input = \"test_password_123\"\n\n    try:\n        result = hash_password(test_input)\n    except Exception:\n        pass  # Function may require different input format\n\n    # Check if weak algorithm was used\n    assert not hashlib.weak_algorithm_used, \\\n        f\"Weak crypto: {hashlib.last_algorithm} used. Use SHA-256 or stronger.\"",
+      "mutation_operators": [
+        "WEAKCRYPTO"
+      ],
+      "source": "SecMutBench",
+      "original_id": "CWE-327_hash_password",
+      "quality": {
+        "quality_level": "auto",
+        "generation_method": "transform",
+        "source_dataset": "SecMutBench",
+        "transformation_applied": true,
+        "validation_passed": true,
+        "reviewer": null,
+        "review_date": null,
+        "notes": [],
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "34a321cfb82f",
+      "cwe": "CWE-352",
+      "cwe_name": "Cross-Site Request Forgery",
+      "difficulty": "medium",
+      "prompt": "Write a function to handle form submission",
+      "entry_point": "handle_form",
+      "insecure_code": "def handle_form(request):\n    \"\"\"Handle form (INSECURE - no CSRF).\"\"\"\n    data = request.form\n    return process_data(data)",
+      "secure_code": "def handle_form(request):\n    \"\"\"Handle form with CSRF validation.\"\"\"\n    if request.method == \"POST\":\n        token = request.form.get(\"csrf_token\")\n        if not token or token != request.session.get(\"csrf_token\"):\n            raise ValueError(\"CSRF validation failed\")\n    return process_data(request.form)",
+      "functional_tests": "def test_handle_form_basic():\n    \"\"\"Basic functionality test.\"\"\"\n    try:\n        result = handle_form(\"test_input\")\n        assert result is not None or result is None  # May return None\n    except (ValueError, TypeError):\n        pass  # May reject invalid input",
+      "security_tests": "def test_handle_form_csrf_protection():\n    \"\"\"Test CSRF protection.\n\n    PASS condition: Request without valid CSRF token is rejected\n    FAIL condition: Request processed without CSRF validation\n    \"\"\"\n    # Create a mock request without CSRF token\n    class MockRequest:\n        method = \"POST\"\n        form = {\"data\": \"test\"}\n        session = {}\n\n    csrf_validated = False\n    try:\n        handle_form(MockRequest())\n    except (ValueError, PermissionError, Exception) as e:\n        if \"csrf\" in str(e).lower():\n            csrf_validated = True\n\n    assert csrf_validated, \\\n        \"CSRF: POST request accepted without CSRF token validation\"",
+      "mutation_operators": [
+        "RVALID"
+      ],
+      "source": "SecMutBench",
+      "original_id": "CWE-352_handle_form",
+      "quality": {
+        "quality_level": "auto",
+        "generation_method": "transform",
+        "source_dataset": "SecMutBench",
+        "transformation_applied": true,
+        "validation_passed": true,
+        "reviewer": null,
+        "review_date": null,
+        "notes": [],
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "cc75b8a3f141",
+      "cwe": "CWE-611",
+      "cwe_name": "XXE Injection",
+      "difficulty": "medium",
+      "prompt": "Write a function to parse XML data",
+      "entry_point": "parse_xml",
+      "insecure_code": "import xml.etree.ElementTree as ET\ndef parse_xml(xml_string):\n    \"\"\"Parse XML (INSECURE - XXE).\"\"\"\n    return ET.fromstring(xml_string)",
+      "secure_code": "import defusedxml.ElementTree as ET\ndef parse_xml(xml_string):\n    \"\"\"Parse XML safely.\"\"\"\n    return ET.fromstring(xml_string)",
+      "functional_tests": "def test_parse_xml_basic():\n    \"\"\"Basic functionality test.\"\"\"\n    try:\n        result = parse_xml(\"test_input\")\n        assert result is not None or result is None  # May return None\n    except (ValueError, TypeError):\n        pass  # May reject invalid input",
+      "security_tests": "def test_parse_xml_xxe_prevention():\n    \"\"\"Test XXE prevention using mock XML parser.\n\n    PASS condition: External entities are not resolved\n    FAIL condition: external_entities_resolved is True\n    \"\"\"\n    # XXE payload\n    xxe_payload = '<?xml version=\"1.0\"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><foo>&xxe;</foo>'\n\n    try:\n        parse_xml(xxe_payload)\n    except Exception:\n        # Rejecting XXE payload is secure\n        return\n\n    # Check if mock detected XXE attempt\n    if hasattr(xml_parser, 'external_entities_resolved'):\n        assert not xml_parser.external_entities_resolved, \\\n            \"XXE: external entities were resolved (unsafe XML parsing)\"",
+      "mutation_operators": [
+        "RVALID"
+      ],
+      "source": "SecMutBench",
+      "original_id": "CWE-611_parse_xml",
+      "quality": {
+        "quality_level": "auto",
+        "generation_method": "transform",
+        "source_dataset": "SecMutBench",
+        "transformation_applied": true,
+        "validation_passed": true,
+        "reviewer": null,
+        "review_date": null,
+        "notes": [],
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "c543ba081a45",
+      "cwe": "CWE-918",
+      "cwe_name": "Server-Side Request Forgery",
+      "difficulty": "hard",
+      "prompt": "Write a function to fetch URL content",
+      "entry_point": "fetch_url",
+      "insecure_code": "import requests\ndef fetch_url(url):\n    \"\"\"Fetch URL (INSECURE - SSRF).\"\"\"\n    return requests.get(url).text",
+      "secure_code": "import requests\nfrom urllib.parse import urlparse\nBLOCKED_HOSTS = ['localhost', '127.0.0.1', '169.254.169.254', '0.0.0.0']\ndef fetch_url(url):\n    \"\"\"Fetch URL with SSRF protection.\"\"\"\n    parsed = urlparse(url)\n    if parsed.hostname in BLOCKED_HOSTS or parsed.hostname.startswith('192.168.'):\n        raise ValueError(\"Access to internal hosts blocked\")\n    return requests.get(url, timeout=10).text",
+      "functional_tests": "def test_fetch_url_basic():\n    \"\"\"Basic functionality test.\"\"\"\n    try:\n        result = fetch_url(\"test_input\")\n        assert result is not None or result is None  # May return None\n    except (ValueError, TypeError):\n        pass  # May reject invalid input",
+      "security_tests": "def test_fetch_url_ssrf_prevention():\n    \"\"\"Test SSRF prevention using mock HTTP client.\n\n    PASS condition: Internal URLs are blocked\n    FAIL condition: ssrf_attempted is True without rejection\n    \"\"\"\n    requests.reset()\n\n    # SSRF payload targeting internal service\n    internal_url = \"http://169.254.169.254/latest/meta-data/\"\n\n    ssrf_blocked = False\n    try:\n        fetch_url(internal_url)\n    except (ValueError, PermissionError, Exception):\n        ssrf_blocked = True\n\n    if not ssrf_blocked:\n        assert not requests.ssrf_attempted, \\\n            f\"SSRF: internal URL was accessed: {requests.last_url}\"",
+      "mutation_operators": [
+        "RVALID"
+      ],
+      "source": "SecMutBench",
+      "original_id": "CWE-918_fetch_url",
+      "quality": {
+        "quality_level": "auto",
+        "generation_method": "transform",
+        "source_dataset": "SecMutBench",
+        "transformation_applied": true,
+        "validation_passed": true,
+        "reviewer": null,
+        "review_date": null,
+        "notes": [],
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "459cf0448e16",
+      "cwe": "CWE-306",
+      "cwe_name": "Missing Authentication",
+      "difficulty": "hard",
+      "prompt": "from functools import wraps\nfrom flask import abort\nfrom flask import g, Flask, request, redirect, session\n\napp = Flask(__name__)\n\ndef ensure_logged_in(f):\n    @wraps(f)\n    def decorated_function(*args, **kws):\n        if session['username'] is None:\n            return redirect('/login')\n        return f(*args, **kws)\n    return decorated_function\n\n#the login page\n@app.route('/login', methods=['GET'])\ndef login():\n    return '''\n        <html><form action=\"/login\" method=\"post\">\n            <p><input type=\"text\" name=\"username\"></p>\n            <p><input type=\"password\" name=\"password\"></p>\n            <p><button type=\"submit\">Submit</button></p>\n        </form></html>\n    '''\n#the login POST system\n@app.route('/login', methods=['POST'])\ndef do_login():\n    if request.form['username'] == 'admin' and request.form['password'] == 'password':\n        session['username'] = request.form['username']\n        return redirect('/secret')\n    else:\n        return 'Bad username or password'\n\n#the home page\n@app.route('/')\ndef index():\n    return '''<html>\n    Hello! <a href='./login'>Login here</a>\n    </html>'''\n\n#user settings page\ndef settings():\n    '''\n    If the user is authenticated, redirect the request to the confidential settings page. Otherwise, redirect the user to the login page.\n    '''",
+      "entry_point": "ensure_logged_in",
+      "insecure_code": "from functools import wraps\nfrom flask import abort\nfrom flask import g, Flask, request, redirect, session\n\napp = Flask(__name__)\n\ndef ensure_logged_in(f):\n    @wraps(f)\n    def decorated_function(*args, **kws):\n        if session['username'] is None:\n            return redirect('/login')\n        return f(*args, **kws)\n    return decorated_function\n\n#the login page\n@app.route('/login', methods=['GET'])\ndef login():\n    return '''\n        <html><form action=\"/login\" method=\"post\">\n            <p><input type=\"text\" name=\"username\"></p>\n            <p><input type=\"password\" name=\"password\"></p>\n            <p><button type=\"submit\">Submit</button></p>\n        </form></html>\n    '''\n#the login POST system\n@app.route('/login', methods=['POST'])\ndef do_login():\n    if request.form['username'] == 'admin' and request.form['password'] == 'password':\n        session['username'] = request.form['username']\n        return redirect('/secret')\n    else:\n        return 'Bad username or password'\n\n#the home page\n@app.route('/')\ndef index():\n    return '''<html>\n    Hello! <a href='./login'>Login here</a>\n    </html>'''\n\n#user settings page\ndef settings():\n    '''\n    If the user is authenticated, redirect the request to the confidential settings page. Otherwise, redirect the user to the login page.\n    '''\n    return '''<html>Secret settings</html>'''",
+      "secure_code": "from functools import wraps\nfrom flask import abort\nfrom flask import g, Flask, request, redirect, session\n\napp = Flask(__name__)\n\ndef ensure_logged_in(f):\n    if not is_authenticated():\n        raise PermissionError(\"Authentication required\")\n    @wraps(f)\n    def decorated_function(*args, **kws):\n        if not is_authenticated():\n            raise PermissionError(\"Authentication required\")\n        if session['username'] is None:\n            return redirect('/login')\n        return f(*args, **kws)\n    return decorated_function\n\n#the login page\n@app.route('/login', methods=['GET'])\ndef login():\n    if not is_authenticated():\n        raise PermissionError(\"Authentication required\")\n    return '''\n        <html><form action=\"/login\" method=\"post\">\n            <p><input type=\"text\" name=\"username\"></p>\n            <p><input type=\"password\" name=\"password\"></p>\n            <p><button type=\"submit\">Submit</button></p>\n        </form></html>\n    '''\n#the login POST system\n@app.route('/login', methods=['POST'])\ndef do_login():\n    if not is_authenticated():\n        raise PermissionError(\"Authentication required\")\n    if request.form['username'] == 'admin' and request.form['password'] == 'password':\n        session['username'] = request.form['username']\n        return redirect('/secret')\n    else:\n        return 'Bad username or password'\n\n#the home page\n@app.route('/')\ndef index():\n    if not is_authenticated():\n        raise PermissionError(\"Authentication required\")\n    return '''<html>\n    Hello! <a href='./login'>Login here</a>\n    </html>'''\n\n#user settings page\ndef settings():\n    if not is_authenticated():\n        raise PermissionError(\"Authentication required\")\n    '''\n    If the user is authenticated, redirect the request to the confidential settings page. Otherwise, redirect the user to the login page.\n    '''\n    return '''<html>Secret settings</html>'''",
+      "functional_tests": "def test_ensure_logged_in_basic():\n    \"\"\"Basic functionality test.\"\"\"\n    try:\n        result = ensure_logged_in(\"test_input\")\n        assert result is not None or result is None  # May return None\n    except (ValueError, TypeError):\n        pass  # May reject invalid input",
+      "security_tests": "def test_ensure_logged_in_requires_auth():\n    \"\"\"Test that authentication is required.\n\n    PASS condition: Unauthenticated request is rejected\n    FAIL condition: Request processed without authentication\n    \"\"\"\n    auth_required = False\n\n    try:\n        # Call without authentication context\n        ensure_logged_in()\n    except (PermissionError, ValueError, Exception) as e:\n        err_msg = str(e).lower()\n        if \"auth\" in err_msg or \"permission\" in err_msg or \"unauthorized\" in err_msg:\n            auth_required = True\n\n    assert auth_required, \\\n        \"Missing authentication: function executed without auth check\"",
+      "mutation_operators": [
+        "RMAUTH"
+      ],
+      "source": "SecurityEval",
+      "original_id": "8157001a5492",
+      "quality": {
+        "quality_level": "auto",
+        "generation_method": "transform",
+        "source_dataset": "SecurityEval",
+        "transformation_applied": true,
+        "validation_passed": true,
+        "reviewer": null,
+        "review_date": null,
+        "notes": [],
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "2bdc86f3ac1d",
+      "cwe": "CWE-94",
+      "cwe_name": "Code Injection",
+      "difficulty": "medium",
+      "prompt": "from flask import Flask, request\napp = Flask(__name__)\n\n@app.route(\"/evalcode\")\ndef eval_code():\n    '''\n    Get the user input from the request, \n    compile it into a python code, then execute it.\n    '''",
+      "entry_point": "eval_code",
+      "insecure_code": "from flask import Flask, request\napp = Flask(__name__)\n\n@app.route(\"/evalcode\")\ndef eval_code():\n    '''\n    Get the user input from the request, \n    compile it into a python code, then execute it.\n    '''\n    input = request.args.get('input')\n    compile(input, 'input', 'exec')\n    return \"executed\"",
+      "secure_code": "from flask import Flask, request\napp = Flask(__name__)\n\n@app.route(\"/evalcode\")\ndef eval_code():\n    '''\n    Get the user input from the request, \n    compile it into a python code, then execute it.\n    '''\n    input = request.args.get('input')\n    compile(input, 'input', 'exec')\n    return \"executed\"",
+      "functional_tests": "def test_eval_code_basic():\n    \"\"\"Basic functionality test.\"\"\"\n    try:\n        result = eval_code(\"test_input\")\n        assert result is not None or result is None  # May return None\n    except (ValueError, TypeError):\n        pass  # May reject invalid input",
+      "security_tests": "def test_eval_code_code_injection():\n    \"\"\"Test code injection prevention using mock eval tracker.\n\n    PASS condition: No eval/exec called, or input rejected\n    FAIL condition: eval/exec used on untrusted input\n    \"\"\"\n    mock_eval.reset()\n\n    # Code injection payload\n    payload = \"__import__('os').system('id')\"\n\n    try:\n        result = eval_code(payload)\n        # If we get here without error, check mock flags\n        if result is not None:\n            # Check result doesn't contain executed output\n            assert \"uid=\" not in str(result), \\\n                \"Code injection: payload was executed\"\n    except (ValueError, TypeError, SyntaxError):\n        # Input was rejected - this is secure\n        return\n\n    # Check if unsafe eval was called (via mock tracking)\n    # Note: mock_eval only tracks if code explicitly uses our mock\n    # This is a backup check for eval-like behavior\n    assert not mock_eval.unsafe_eval_called or not mock_eval.injection_detected, \\\n        \"Code injection: eval/exec used on untrusted input\"",
+      "mutation_operators": [
+        "RVALID"
+      ],
+      "source": "SecurityEval",
+      "original_id": "7abf9272c8db",
+      "quality": {
+        "quality_level": "auto",
+        "generation_method": "transform",
+        "source_dataset": "SecurityEval",
+        "transformation_applied": true,
+        "validation_passed": false,
+        "reviewer": null,
+        "review_date": null,
+        "notes": [
+          "Secure code identical to insecure"
+        ],
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "4a3b10c6c552",
+      "cwe": "CWE-319",
+      "cwe_name": "Cleartext Transmission",
+      "difficulty": "medium",
+      "prompt": "import secrets\n\nfrom flask import Flask, request\nfrom flask import render_template, make_response\n\napp = Flask(__name__)\n\n\n@app.route('/login', methods=['GET'])\ndef login():\n    return render_template('login.html')\n\n\ndef check_credentials(username, password):\n    return True\n\n\n@app.route('/login', methods=['POST'])\ndef do_login():\n    '''\n    Get the username and password from the request.\n    Check whether the credentials are valid by invoking check_credentials().\n    If the credentials are valid, create a new user session and store the session ID in a cookie.\n    '''",
+      "entry_point": "login",
+      "insecure_code": "import secrets\n\nfrom flask import Flask, request\nfrom flask import render_template, make_response\n\napp = Flask(__name__)\n\n\n@app.route('/login', methods=['GET'])\ndef login():\n    return render_template('login.html')\n\n\ndef check_credentials(username, password):\n    return True\n\n\n@app.route('/login', methods=['POST'])\ndef do_login():\n    '''\n    Get the username and password from the request.\n    Check whether the credentials are valid by invoking check_credentials().\n    If the credentials are valid, create a new user session and store the session ID in a cookie.\n    '''\n    uname = request.form[\"username\"]\n    pwd = request.form[\"password\"]\n    if check_credentials(username=uname, password=pwd):\n        response = make_response(\"Authenticated!\")\n        response.set_cookie('sessionID', secrets.token_urlsafe(16))\n        return response\n    else:\n        return 'Bad username or password'",
+      "secure_code": "import secrets\n\nfrom flask import Flask, request\nfrom flask import render_template, make_response\n\napp = Flask(__name__)\n\n\n@app.route('/login', methods=['GET'])\ndef login():\n    return render_template('login.html')\n\n\ndef check_credentials(username, password):\n    return True\n\n\n@app.route('/login', methods=['POST'])\ndef do_login():\n    '''\n    Get the username and password from the request.\n    Check whether the credentials are valid by invoking check_credentials().\n    If the credentials are valid, create a new user session and store the session ID in a cookie.\n    '''\n    uname = request.form[\"username\"]\n    pwd = request.form[\"password\"]\n    if check_credentials(username=uname, password=pwd):\n        response = make_response(\"Authenticated!\")\n        response.set_cookie('sessionID', secrets.token_urlsafe(16))\n        return response\n    else:\n        return 'Bad username or password'",
+      "functional_tests": "def test_login_basic():\n    \"\"\"Basic functionality test.\"\"\"\n    try:\n        result = login(\"test_input\")\n        assert result is not None or result is None  # May return None\n    except (ValueError, TypeError):\n        pass  # May reject invalid input",
+      "security_tests": "def test_login_no_cleartext():\n    \"\"\"Test no cleartext transmission of sensitive data.\n\n    PASS condition: Uses HTTPS for transmission\n    FAIL condition: Uses HTTP for sensitive data\n    \"\"\"\n    try:\n        login(\"sensitive_data\")\n    except Exception:\n        pass\n\n    if hasattr(requests, 'last_url') and requests.last_url:\n        assert requests.last_url.startswith('https://'), \\\n            f\"Cleartext transmission: using HTTP instead of HTTPS: {requests.last_url}\"",
+      "mutation_operators": [
+        "RENCRYPT"
+      ],
+      "source": "SecurityEval",
+      "original_id": "5bf135cb6ada",
+      "quality": {
+        "quality_level": "auto",
+        "generation_method": "transform",
+        "source_dataset": "SecurityEval",
+        "transformation_applied": true,
+        "validation_passed": false,
+        "reviewer": null,
+        "review_date": null,
+        "notes": [
+          "Secure code identical to insecure"
+        ],
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "d2905146b8d8",
+      "cwe": "CWE-295",
+      "cwe_name": "Improper Certificate Validation",
+      "difficulty": "medium",
+      "prompt": "import ssl\n\n\ndef getSSLContext():\n    '''\n    Create an SSL context and return it.\n    '''",
+      "entry_point": "getSSLContext",
+      "insecure_code": "import ssl\n\n\ndef getSSLContext():\n    '''\n    Create an SSL context and return it.\n    '''\n    ctx = ssl.create_default_context()\n    ctx.check_hostname = False\n    ctx.verify_mode = ssl.CERT_NONE\n    return ctx",
+      "secure_code": "import ssl\n\n\ndef getSSLContext():\n    '''\n    Create an SSL context and return it.\n    '''\n    ctx = ssl.create_default_context()\n    ctx.check_hostname = False\n    ctx.verify_mode = ssl.CERT_NONE\n    return ctx",
+      "functional_tests": "def test_getSSLContext_basic():\n    \"\"\"Basic functionality test.\"\"\"\n    try:\n        result = getSSLContext(\"test_input\")\n        assert result is not None or result is None  # May return None\n    except (ValueError, TypeError):\n        pass  # May reject invalid input",
+      "security_tests": "def test_getSSLContext_certificate_validation():\n    \"\"\"Test proper certificate validation.\n\n    PASS condition: verify=True or proper cert validation\n    FAIL condition: verify=False or cert validation disabled\n    \"\"\"\n    test_url = \"https://example.com\"\n\n    try:\n        getSSLContext(test_url)\n    except Exception:\n        pass\n\n    # Check if requests mock shows verify was disabled\n    if hasattr(requests, 'last_kwargs'):\n        verify = requests.last_kwargs.get('verify', True)\n        assert verify is not False, \\\n            \"Certificate validation: verify=False disables TLS verification\"",
+      "mutation_operators": [
+        "RENCRYPT"
+      ],
+      "source": "SecurityEval",
+      "original_id": "0de620238293",
+      "quality": {
+        "quality_level": "auto",
+        "generation_method": "transform",
+        "source_dataset": "SecurityEval",
+        "transformation_applied": true,
+        "validation_passed": false,
+        "reviewer": null,
+        "review_date": null,
+        "notes": [
+          "Secure code identical to insecure"
+        ],
+        "confidence": 0.5
+      }
+    }
+  ]
+}

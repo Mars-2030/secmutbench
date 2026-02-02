@@ -1,0 +1,72 @@
+{
+  "cwe_id": "CWE-319",
+  "name": "Cleartext Transmission of Sensitive Information",
+  "description": "The product transmits sensitive or security-critical data in cleartext in a communication channel that can be sniffed by unauthorized actors.",
+  "extended_description": "",
+  "modes_of_introduction": [],
+  "common_consequences": [
+    {
+      "scope": "Read Application Data; Modify Files or Directories",
+      "impact": "Scope: Integrity, ConfidentialityAnyone can read the information by gaining access to the channel being used for communication. Many communication channels can be \"sniffed\" (monitored) by adversaries during data transmission. For example, in networking, packets can traverse many intermediary nodes from the source to the destination, whether across the internet, an internal network, the cloud, etc. Some actors might have privileged access to a network interface or any link along the channel, such as a router, but they might not be authorized to collect the underlying data. As a result, network traffic could be sniffed by adversaries, spilling security-critical data."
+    },
+    {
+      "scope": "Read Application Data; Modify Files or Directories; Other",
+      "impact": "Scope: Integrity, ConfidentialityWhen full communications are recorded or logged, such as with a packet dump, an adversary could attempt to obtain the dump long after the transmission has occurred and try to \"sniff\" the cleartext from the recorded communications in the dump itself. Even if the information is encoded in a way that is not human-readable, certain techniques could determine which encoding is being used, then decode the information."
+    }
+  ],
+  "potential_mitigations": [
+    {
+      "phase": "Architecture and Design",
+      "strategy": "Before transmitting, encrypt the data using reliable, confidentiality-protecting cryptographic protocols.",
+      "description": ""
+    },
+    {
+      "phase": "Implementation",
+      "strategy": "When using web applications with SSL, use SSL for the entire session from login to logout, not just for the initial login page.",
+      "description": ""
+    },
+    {
+      "phase": "Implementation",
+      "strategy": "When designing hardware platforms, ensure that approved encryption algorithms (such as those recommended by NIST) protect paths from security critical data to trusted user applications.",
+      "description": ""
+    },
+    {
+      "phase": "Testing",
+      "strategy": "Use tools and techniques that require manual (human) analysis, such as penetration testing, threat modeling, and interactive tools that allow the tester to record and modify an active session. These may be more effective than strictly automated techniques. This is especially the case with weaknesses that are related to design and business rules.",
+      "description": ""
+    },
+    {
+      "phase": "Operation",
+      "strategy": "Configure servers to use encrypted channels for communication, which may include SSL or other secure protocols.",
+      "description": ""
+    }
+  ],
+  "detection_methods": [
+    {
+      "method": "Black Box",
+      "description": "Use monitoring tools that examine the software's process as it interacts with the operating system and the network. This technique is useful in cases when source code is unavailable, if the software was not developed by you, or if you want to verify that the build phase did not introduce any new weaknesses. Examples include debuggers that directly attach to the running process; system-call tracing utilities such as truss (Solaris) and strace (Linux); system activity monitors such as FileMon, RegMon, Process Monitor, and other Sysinternals utilities (Windows); and sniffers and protocol analyzers that monitor network traffic.Attach the monitor to the process, trigger the feature that sends the data, and look for the presence or absence of common cryptographic functions in the call tree. Monitor the network and determine if the data packets contain readable commands. Tools exist for detecting if certain encodings are in use. If the traffic contains high entropy, this might indicate the usage of encryption."
+    },
+    {
+      "method": "Automated Static Analysis",
+      "description": "Automated static analysis, commonly referred to as Static Application Security Testing (SAST), can find some instances of this weakness by analyzing source code (or binary/compiled code) without having to execute it. Typically, this is done by building a model of data flow and control flow, then searching for potentially-vulnerable patterns that connect \"sources\" (origins of input) with \"sinks\" (destinations where the data interacts with external components, a lower layer such as the OS, etc.)Effectiveness: High"
+    }
+  ],
+  "code_examples": [],
+  "related_cwes": [],
+  "related_attack_patterns": [
+    "CAPEC-102",
+    "CAPEC-117",
+    "CAPEC-383",
+    "CAPEC-477",
+    "CAPEC-65"
+  ],
+  "applicable_platforms": [
+    "Languages",
+    "Class: Not Language-Specific(Undetermined Prevalence)",
+    "Technologies",
+    "Class: Not Technology-Specific(Undetermined Prevalence)Class: Cloud Computing(Undetermined Prevalence)Class: Mobile(Undetermined Prevalence)Class: ICS/OT(Often Prevalent)Class: System on Chip(Undetermined Prevalence)Test/Debug Hardware(Often Prevalent)"
+  ],
+  "likelihood_of_exploit": "High",
+  "url": "https://cwe.mitre.org/data/definitions/319.html",
+  "fetched_at": "2026-01-06 19:37:56"
+}

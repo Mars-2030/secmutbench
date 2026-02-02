@@ -1,0 +1,497 @@
+"""
+Metrics Calculation for SecMutBench
+
+Computes mutation scores and other evaluation metrics.
+"""
+
+from typing import List, Dict, Any, Optional
+from dataclasses import dataclass, field
+from collections import defaultdict
+import statistics
+
+
+@dataclass
+class SurvivedMutant:
+    """Details of a mutant that survived (was not killed by tests)."""
+    id: str
+    operator: str
+    description: str
+    sample_id: str
+    cwe: str
+
+
+@dataclass
+class MutationMetrics:
+    """Metrics for mutation testing."""
+    total_mutants: int = 0
+    killed_mutants: int = 0
+    survived_mutants: int = 0
+    equivalent_mutants: int = 0
+    timeout_mutants: int = 0
+    error_mutants: int = 0
+
+    @property
+    def mutation_score(self) -> float:
+        """Calculate mutation score (killed / killable)."""
+        killable = self.total_mutants - self.equivalent_mutants
+        if killable <= 0:
+            return 0.0
+        return self.killed_mutants / killable
+
+    @property
+    def survival_rate(self) -> float:
+        """Calculate survival rate (survived / total)."""
+        if self.total_mutants <= 0:
+            return 0.0
+        return self.survived_mutants / self.total_mutants
+
+    @property
+    def kill_rate(self) -> float:
+        """Calculate raw kill rate (killed / total)."""
+        if self.total_mutants <= 0:
+            return 0.0
+        return self.killed_mutants / self.total_mutants
+
+
+@dataclass
+class CoverageMetrics:
+    """Code coverage metrics."""
+    lines_covered: int = 0
+    total_lines: int = 0
+    branches_covered: int = 0
+    total_branches: int = 0
+
+    @property
+    def line_coverage(self) -> float:
+        if self.total_lines <= 0:
+            return 0.0
+        return self.lines_covered / self.total_lines
+
+    @property
+    def branch_coverage(self) -> float:
+        if self.total_branches <= 0:
+            return 0.0
+        return self.branches_covered / self.total_branches
+
+
+@dataclass
+class SampleMetrics:
+    """Complete metrics for a single sample."""
+    sample_id: str
+    cwe: str
+    difficulty: str
+    vulnerability_detected: bool = False
+    mutation: MutationMetrics = field(default_factory=MutationMetrics)
+    coverage: CoverageMetrics = field(default_factory=CoverageMetrics)
+    test_count: int = 0
+    execution_time: float = 0.0
+    errors: List[str] = field(default_factory=list)
+
+
+@dataclass
+class AggregateMetrics:
+    """Aggregated metrics across multiple samples."""
+    samples: int = 0
+    avg_mutation_score: float = 0.0
+    avg_vulnerability_detection: float = 0.0
+    avg_line_coverage: float = 0.0
+    avg_branch_coverage: float = 0.0
+    total_mutants: int = 0
+    total_killed: int = 0
+
+
+def calculate_mutation_score(
+    killed: int,
+    total: int,
+    equivalent: int = 0,
+) -> float:
+    """
+    Calculate mutation score.
+
+    Args:
+        killed: Number of killed mutants
+        total: Total number of mutants
+        equivalent: Number of equivalent mutants
+
+    Returns:
+        Mutation score as a float between 0 and 1
+    """
+    killable = total - equivalent
+    if killable <= 0:
+        return 0.0
+    return killed / killable
+
+
+def calculate_metrics(
+    sample_results: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Calculate aggregate metrics from sample results.
+
+    Args:
+        sample_results: List of per-sample result dicts
+
+    Returns:
+        Dict containing aggregate metrics
+    """
+    if not sample_results:
+        return {"error": "No results provided"}
+
+    # Extract values
+    mutation_scores = []
+    vuln_detections = []
+    line_coverages = []
+    branch_coverages = []
+    total_mutants = 0
+    total_killed = 0
+
+    for result in sample_results:
+        metrics = result.get("metrics", {})
+
+        if "mutation_score" in metrics:
+            mutation_scores.append(metrics["mutation_score"])
+
+        if "vuln_detected" in metrics:
+            vuln_detections.append(1 if metrics["vuln_detected"] else 0)
+
+        if "line_coverage" in metrics:
+            line_coverages.append(metrics["line_coverage"])
+
+        if "branch_coverage" in metrics:
+            branch_coverages.append(metrics["branch_coverage"])
+
+        if "mutants_total" in metrics:
+            total_mutants += metrics["mutants_total"]
+
+        if "mutants_killed" in metrics:
+            total_killed += metrics["mutants_killed"]
+
+    total_survived = total_mutants - total_killed
+
+    return {
+        "samples": len(sample_results),
+        "avg_mutation_score": statistics.mean(mutation_scores) if mutation_scores else 0.0,
+        "std_mutation_score": statistics.stdev(mutation_scores) if len(mutation_scores) > 1 else 0.0,
+        "avg_vuln_detection": statistics.mean(vuln_detections) if vuln_detections else 0.0,
+        "avg_line_coverage": statistics.mean(line_coverages) if line_coverages else 0.0,
+        "avg_branch_coverage": statistics.mean(branch_coverages) if branch_coverages else 0.0,
+        "total_mutants": total_mutants,
+        "total_killed": total_killed,
+        "total_survived": total_survived,
+        "overall_mutation_score": total_killed / total_mutants if total_mutants > 0 else 0.0,
+        "overall_survival_rate": total_survived / total_mutants if total_mutants > 0 else 0.0,
+    }
+
+
+def aggregate_by_cwe(
+    sample_results: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Aggregate metrics by CWE type.
+
+    Args:
+        sample_results: List of per-sample result dicts
+
+    Returns:
+        Dict mapping CWE to aggregated metrics
+    """
+    by_cwe = defaultdict(list)
+
+    for result in sample_results:
+        cwe = result.get("cwe", "unknown")
+        by_cwe[cwe].append(result)
+
+    aggregated = {}
+    for cwe, results in by_cwe.items():
+        aggregated[cwe] = calculate_metrics(results)
+        aggregated[cwe]["samples_count"] = len(results)
+
+    return aggregated
+
+
+def aggregate_by_difficulty(
+    sample_results: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Aggregate metrics by difficulty level.
+
+    Args:
+        sample_results: List of per-sample result dicts
+
+    Returns:
+        Dict mapping difficulty to aggregated metrics
+    """
+    by_difficulty = defaultdict(list)
+
+    for result in sample_results:
+        difficulty = result.get("difficulty", "unknown")
+        by_difficulty[difficulty].append(result)
+
+    aggregated = {}
+    for difficulty, results in by_difficulty.items():
+        aggregated[difficulty] = calculate_metrics(results)
+        aggregated[difficulty]["samples_count"] = len(results)
+
+    return aggregated
+
+
+def aggregate_by_operator(
+    sample_results: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Aggregate metrics by mutation operator.
+
+    Args:
+        sample_results: List of per-sample result dicts
+
+    Returns:
+        Dict mapping operator to kill/survival statistics
+    """
+    operator_stats = defaultdict(lambda: {"total": 0, "killed": 0, "survived": 0})
+
+    for result in sample_results:
+        mutant_details = result.get("mutant_details", [])
+        for mutant in mutant_details:
+            operator = mutant.get("operator", "unknown")
+            operator_stats[operator]["total"] += 1
+            if mutant.get("killed", False):
+                operator_stats[operator]["killed"] += 1
+            else:
+                operator_stats[operator]["survived"] += 1
+
+    # Calculate rates
+    for operator, stats in operator_stats.items():
+        stats["kill_rate"] = stats["killed"] / stats["total"] if stats["total"] > 0 else 0.0
+        stats["survival_rate"] = stats["survived"] / stats["total"] if stats["total"] > 0 else 0.0
+
+    return dict(operator_stats)
+
+
+def get_survived_mutants(
+    sample_results: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Get details of all mutants that survived (were not killed by tests).
+
+    Args:
+        sample_results: List of per-sample result dicts
+
+    Returns:
+        List of survived mutant details with sample context
+    """
+    survived = []
+
+    for result in sample_results:
+        sample_id = result.get("sample_id", "unknown")
+        cwe = result.get("cwe", "unknown")
+        mutant_details = result.get("mutant_details", [])
+
+        for mutant in mutant_details:
+            if not mutant.get("killed", False):
+                survived.append({
+                    "mutant_id": mutant.get("id", "unknown"),
+                    "operator": mutant.get("operator", "unknown"),
+                    "description": mutant.get("description", ""),
+                    "sample_id": sample_id,
+                    "cwe": cwe,
+                })
+
+    return survived
+
+
+def analyze_survival_patterns(
+    sample_results: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Analyze patterns in mutant survival to identify test weaknesses.
+
+    Args:
+        sample_results: List of per-sample result dicts
+
+    Returns:
+        Dict with survival analysis including:
+        - survival_by_operator: Which operators have highest survival
+        - survival_by_cwe: Which CWEs have highest survival
+        - most_survived_samples: Samples with most survived mutants
+    """
+    survived_mutants = get_survived_mutants(sample_results)
+
+    # Survival by operator
+    by_operator = defaultdict(int)
+    for m in survived_mutants:
+        by_operator[m["operator"]] += 1
+
+    # Survival by CWE
+    by_cwe = defaultdict(int)
+    for m in survived_mutants:
+        by_cwe[m["cwe"]] += 1
+
+    # Survival by sample
+    by_sample = defaultdict(int)
+    for m in survived_mutants:
+        by_sample[m["sample_id"]] += 1
+
+    # Get operator stats for context
+    operator_stats = aggregate_by_operator(sample_results)
+
+    # Calculate survival rates per operator
+    operator_survival = {}
+    for op, count in by_operator.items():
+        total = operator_stats.get(op, {}).get("total", count)
+        operator_survival[op] = {
+            "survived": count,
+            "total": total,
+            "survival_rate": count / total if total > 0 else 0.0,
+        }
+
+    # Sort by survival rate (descending) - these are the weak spots
+    weak_operators = sorted(
+        operator_survival.items(),
+        key=lambda x: x[1]["survival_rate"],
+        reverse=True
+    )
+
+    # Top samples with most survivors
+    top_samples = sorted(by_sample.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    return {
+        "total_survived": len(survived_mutants),
+        "survival_by_operator": dict(by_operator),
+        "survival_by_cwe": dict(by_cwe),
+        "operator_survival_rates": operator_survival,
+        "weak_operators": weak_operators[:5],  # Top 5 operators with highest survival
+        "samples_with_most_survivors": top_samples,
+        "survived_mutants": survived_mutants,
+    }
+
+
+def format_metrics_report(
+    metrics: Dict[str, Any],
+    by_cwe: Optional[Dict[str, Dict[str, Any]]] = None,
+    by_difficulty: Optional[Dict[str, Dict[str, Any]]] = None,
+    survival_analysis: Optional[Dict[str, Any]] = None,
+) -> str:
+    """
+    Format metrics as a human-readable report.
+
+    Args:
+        metrics: Overall metrics dict
+        by_cwe: Optional per-CWE metrics
+        by_difficulty: Optional per-difficulty metrics
+        survival_analysis: Optional survival pattern analysis
+
+    Returns:
+        Formatted report string
+    """
+    lines = [
+        "=" * 60,
+        "SecMutBench Evaluation Report",
+        "=" * 60,
+        "",
+        "Overall Metrics:",
+        f"  Samples Evaluated:     {metrics.get('samples', 0)}",
+        f"  Avg Mutation Score:    {metrics.get('avg_mutation_score', 0):.2%}",
+        f"  Std Mutation Score:    {metrics.get('std_mutation_score', 0):.2%}",
+        f"  Avg Vuln Detection:    {metrics.get('avg_vuln_detection', 0):.2%}",
+        "",
+        "Mutation Statistics:",
+        f"  Total Mutants:         {metrics.get('total_mutants', 0)}",
+        f"  Killed:                {metrics.get('total_killed', 0)}",
+        f"  Survived:              {metrics.get('total_survived', 0)}",
+        f"  Kill Rate:             {metrics.get('overall_mutation_score', 0):.2%}",
+        f"  Survival Rate:         {metrics.get('overall_survival_rate', 0):.2%}",
+        "",
+    ]
+
+    if by_cwe:
+        lines.extend([
+            "-" * 60,
+            "Metrics by CWE:",
+            "",
+        ])
+        for cwe, cwe_metrics in sorted(by_cwe.items()):
+            lines.append(
+                f"  {cwe}: "
+                f"Score={cwe_metrics.get('avg_mutation_score', 0):.2%}, "
+                f"Detection={cwe_metrics.get('avg_vuln_detection', 0):.2%}, "
+                f"Samples={cwe_metrics.get('samples_count', 0)}"
+            )
+        lines.append("")
+
+    if by_difficulty:
+        lines.extend([
+            "-" * 60,
+            "Metrics by Difficulty:",
+            "",
+        ])
+        for difficulty in ["easy", "medium", "hard"]:
+            if difficulty in by_difficulty:
+                diff_metrics = by_difficulty[difficulty]
+                lines.append(
+                    f"  {difficulty.capitalize():8}: "
+                    f"Score={diff_metrics.get('avg_mutation_score', 0):.2%}, "
+                    f"Detection={diff_metrics.get('avg_vuln_detection', 0):.2%}, "
+                    f"Samples={diff_metrics.get('samples_count', 0)}"
+                )
+        lines.append("")
+
+    if survival_analysis:
+        lines.extend([
+            "-" * 60,
+            "Mutation Survival Analysis:",
+            "",
+            f"  Total Survived:        {survival_analysis.get('total_survived', 0)}",
+            "",
+            "  Weak Operators (highest survival - tests may be missing):",
+        ])
+        weak_ops = survival_analysis.get('weak_operators', [])
+        for op, stats in weak_ops[:5]:
+            lines.append(
+                f"    {op}: {stats['survived']}/{stats['total']} survived "
+                f"({stats['survival_rate']:.0%})"
+            )
+        lines.append("")
+
+        lines.append("  Survival by CWE:")
+        survival_by_cwe = survival_analysis.get('survival_by_cwe', {})
+        for cwe, count in sorted(survival_by_cwe.items(), key=lambda x: -x[1])[:5]:
+            lines.append(f"    {cwe}: {count} mutants survived")
+        lines.append("")
+
+    lines.append("=" * 60)
+
+    return "\n".join(lines)
+
+
+def compare_models(
+    results: Dict[str, List[Dict[str, Any]]],
+) -> str:
+    """
+    Compare metrics across multiple models.
+
+    Args:
+        results: Dict mapping model name to list of sample results
+
+    Returns:
+        Formatted comparison table
+    """
+    lines = [
+        "Model Comparison",
+        "=" * 80,
+        f"{'Model':<20} {'Samples':<10} {'Mut Score':<12} {'Vuln Det':<12} {'Coverage':<12}",
+        "-" * 80,
+    ]
+
+    for model_name, sample_results in sorted(results.items()):
+        metrics = calculate_metrics(sample_results)
+        lines.append(
+            f"{model_name:<20} "
+            f"{metrics.get('samples', 0):<10} "
+            f"{metrics.get('avg_mutation_score', 0):<12.2%} "
+            f"{metrics.get('avg_vuln_detection', 0):<12.2%} "
+            f"{metrics.get('avg_line_coverage', 0):<12.2%}"
+        )
+
+    lines.append("=" * 80)
+
+    return "\n".join(lines)

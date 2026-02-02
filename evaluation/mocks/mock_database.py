@@ -1,0 +1,238 @@
+"""
+Mock Database for SecMutBench
+
+Provides a mock database for testing SQL-related code and detecting SQL injection.
+"""
+
+import os
+from typing import Dict, List, Any, Optional
+
+
+class MockDatabase:
+    """Mock database for testing SQL-related code."""
+
+    def __init__(self):
+        self._default_tables = {
+            "users": [
+                {"id": 1, "name": "alice", "email": "alice@example.com", "password_hash": "hash_alice"},
+                {"id": 2, "name": "bob", "email": "bob@example.com", "password_hash": "hash_bob"},
+                {"id": 3, "name": "charlie", "email": "charlie@example.com", "password_hash": "hash_charlie"},
+            ],
+            "passwords": [
+                {"user_id": 1, "hash": "hash1"},
+                {"user_id": 2, "hash": "hash2"},
+            ],
+            "sessions": [
+                {"session_id": "valid_session_123", "user_id": 1, "expires": "2099-12-31"},
+            ],
+            "products": [],
+            "orders": [],
+            "customers": [],
+            "employees": [],
+            "secrets": [
+                {"id": 1, "key": "secret_api_key", "value": "supersecret123"},
+            ],
+        }
+        self.tables = {k: [dict(row) for row in v] for k, v in self._default_tables.items()}
+        self.last_query = None
+        self.last_params = None
+        self.query_count = 0
+        self._last_results = []
+        self._committed = False
+
+    def reset(self):
+        """Reset database to initial state."""
+        self.tables = {k: [dict(row) for row in v] for k, v in self._default_tables.items()}
+        self.last_query = None
+        self.last_params = None
+        self.query_count = 0
+        self._last_results = []
+        self._committed = False
+
+    def add_row(self, table: str, row: Dict):
+        """Add a row to a table."""
+        if table not in self.tables:
+            self.tables[table] = []
+        self.tables[table].append(dict(row))
+
+    def update_row(self, table: str, match_col: str, match_val: Any, updates: Dict):
+        """Update rows matching a condition."""
+        if table not in self.tables:
+            return 0
+        count = 0
+        for row in self.tables[table]:
+            if row.get(match_col) == match_val:
+                row.update(updates)
+                count += 1
+        return count
+
+    def delete_row(self, table: str, match_col: str, match_val: Any) -> int:
+        """Delete rows matching a condition."""
+        if table not in self.tables:
+            return 0
+        original_len = len(self.tables[table])
+        self.tables[table] = [r for r in self.tables[table] if r.get(match_col) != match_val]
+        return original_len - len(self.tables[table])
+
+    def clear_table(self, table: str):
+        """Clear all rows from a table."""
+        if table in self.tables:
+            self.tables[table] = []
+
+    def get_table(self, table: str) -> List[Dict]:
+        """Get all rows from a table."""
+        return self.tables.get(table, [])
+
+    def get_row(self, table: str, match_col: str, match_val: Any) -> Optional[Dict]:
+        """Get a single row matching a condition."""
+        for row in self.tables.get(table, []):
+            if row.get(match_col) == match_val:
+                return dict(row)
+        return None
+
+    def cursor(self):
+        """Return self as cursor (for cursor-based patterns)."""
+        return self
+
+    def fetchall(self) -> List[Dict]:
+        """Fetch all results from last query."""
+        return self._last_results
+
+    def fetchone(self) -> Optional[Dict]:
+        """Fetch one result from last query."""
+        return self._last_results[0] if self._last_results else None
+
+    def connection(self):
+        """Return self for context manager pattern."""
+        return self
+
+    def commit(self):
+        """Commit transaction (mock)."""
+        self._committed = True
+
+    def rollback(self):
+        """Rollback transaction (mock - resets to defaults)."""
+        self.reset()
+
+    def close(self):
+        """Close connection (mock - no-op)."""
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def execute(self, query: str, params: tuple = None) -> List[Dict]:
+        """Execute a query and return results."""
+        self.last_query = query
+        self.last_params = params
+        self.query_count += 1
+
+        # Detect SQL injection attempts in non-parameterized queries
+        if params is None:
+            injection_patterns = [
+                "' OR '1'='1",
+                "'; DROP TABLE",
+                "UNION SELECT",
+                "' OR ''='",
+                "' OR 1=1",
+                "OR 1=1--",
+                "'; DELETE FROM",
+                "'; UPDATE ",
+                "1'; --",
+            ]
+            query_upper = query.upper()
+            for pattern in injection_patterns:
+                if pattern.upper() in query_upper:
+                    # Simulate injection success - return all rows from relevant table
+                    table_match = self._find_table_in_query(query)
+                    if table_match:
+                        self._last_results = list(self.tables.get(table_match, []))
+                    else:
+                        self._last_results = list(self.tables.get("users", []))
+                    return self._last_results
+
+        # Execute the query normally
+        results = self._execute_simple_query(query, params)
+        self._last_results = results
+        return results
+
+    def _find_table_in_query(self, query: str) -> Optional[str]:
+        """Extract table name from query."""
+        query_upper = query.upper()
+        for table in self.tables.keys():
+            if table.upper() in query_upper:
+                return table
+        return None
+
+    def _execute_simple_query(self, query: str, params: tuple = None) -> List[Dict]:
+        """Execute a simple SELECT query."""
+        query_upper = query.upper()
+
+        # Find the table
+        table_match = self._find_table_in_query(query)
+        if not table_match:
+            return []
+
+        rows = self.tables.get(table_match, [])
+
+        # Handle LIKE queries
+        if params and "LIKE" in query_upper:
+            filtered = []
+            for row in rows:
+                for param in params:
+                    param_str = str(param)
+                    # Handle LIKE pattern matching
+                    if param_str.startswith('%') and param_str.endswith('%'):
+                        search_term = param_str[1:-1]
+                        for col, val in row.items():
+                            if search_term.lower() in str(val).lower():
+                                if row not in filtered:
+                                    filtered.append(row)
+                                break
+                    elif param_str.startswith('%'):
+                        search_term = param_str[1:]
+                        for col, val in row.items():
+                            if str(val).lower().endswith(search_term.lower()):
+                                if row not in filtered:
+                                    filtered.append(row)
+                                break
+                    elif param_str.endswith('%'):
+                        search_term = param_str[:-1]
+                        for col, val in row.items():
+                            if str(val).lower().startswith(search_term.lower()):
+                                if row not in filtered:
+                                    filtered.append(row)
+                                break
+            # Apply LIMIT if present
+            if "LIMIT" in query_upper and params and len(params) > 1:
+                try:
+                    limit = int(params[-1])
+                    filtered = filtered[:limit]
+                except (ValueError, TypeError):
+                    pass
+            return filtered
+
+        # Handle WHERE with parameterized queries
+        if params and "WHERE" in query_upper:
+            filtered = []
+            for row in rows:
+                for param in params:
+                    for col, val in row.items():
+                        if str(val) == str(param):
+                            if row not in filtered:
+                                filtered.append(row)
+                            break
+            return filtered
+
+        return rows[:1] if rows else []
+
+    def table_exists(self, table_name: str) -> bool:
+        """Check if table exists."""
+        return table_name in self.tables
+
+    def count_rows(self, table: str) -> int:
+        """Count rows in a table."""
+        return len(self.tables.get(table, []))

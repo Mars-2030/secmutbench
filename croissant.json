@@ -1,0 +1,139 @@
+{
+  "@context": {
+    "@vocab": "https://schema.org/",
+    "cr": "http://mlcommons.org/croissant/",
+    "sc": "https://schema.org/"
+  },
+  "@type": "sc:Dataset",
+  "name": "SecMutBench",
+  "description": "A benchmark for evaluating LLM-generated security tests using mutation testing.",
+  "license": "https://opensource.org/licenses/MIT",
+  "url": "https://github.com/secmutbench/SecMutBench",
+  "version": "2.1",
+  "datePublished": "2026-01-31",
+  "dateModified": "2026-01-31",
+  "creator": {
+    "@type": "Organization",
+    "name": "SecMutBench Team"
+  },
+  "distribution": [
+    {
+      "@type": "cr:FileObject",
+      "name": "dataset.json",
+      "contentUrl": "data/dataset.json",
+      "encodingFormat": "application/json",
+      "sha256": ""
+    },
+    {
+      "@type": "cr:FileObject",
+      "name": "samples.json",
+      "contentUrl": "data/samples.json",
+      "encodingFormat": "application/json"
+    },
+    {
+      "@type": "cr:FileObject",
+      "name": "easy.json",
+      "contentUrl": "data/splits/easy.json",
+      "encodingFormat": "application/json"
+    },
+    {
+      "@type": "cr:FileObject",
+      "name": "medium.json",
+      "contentUrl": "data/splits/medium.json",
+      "encodingFormat": "application/json"
+    },
+    {
+      "@type": "cr:FileObject",
+      "name": "hard.json",
+      "contentUrl": "data/splits/hard.json",
+      "encodingFormat": "application/json"
+    }
+  ],
+  "recordSet": [
+    {
+      "@type": "cr:RecordSet",
+      "name": "samples",
+      "description": "Security code samples with tests",
+      "field": [
+        {
+          "@type": "cr:Field",
+          "name": "id",
+          "dataType": "sc:Text"
+        },
+        {
+          "@type": "cr:Field",
+          "name": "cwe",
+          "dataType": "sc:Text"
+        },
+        {
+          "@type": "cr:Field",
+          "name": "cwe_name",
+          "dataType": "sc:Text"
+        },
+        {
+          "@type": "cr:Field",
+          "name": "difficulty",
+          "dataType": "sc:Text"
+        },
+        {
+          "@type": "cr:Field",
+          "name": "prompt",
+          "dataType": "sc:Text"
+        },
+        {
+          "@type": "cr:Field",
+          "name": "entry_point",
+          "dataType": "sc:Text"
+        },
+        {
+          "@type": "cr:Field",
+          "name": "insecure_code",
+          "dataType": "sc:Text"
+        },
+        {
+          "@type": "cr:Field",
+          "name": "secure_code",
+          "dataType": "sc:Text"
+        },
+        {
+          "@type": "cr:Field",
+          "name": "functional_tests",
+          "dataType": "sc:Text"
+        },
+        {
+          "@type": "cr:Field",
+          "name": "security_tests",
+          "dataType": "sc:Text"
+        },
+        {
+          "@type": "cr:Field",
+          "name": "source",
+          "dataType": "sc:Text"
+        }
+      ]
+    }
+  ],
+  "keywords": [
+    "security",
+    "mutation-testing",
+    "vulnerability-detection",
+    "code-generation",
+    "benchmark",
+    "python",
+    "cwe"
+  ],
+  "measurementTechnique": "Mutation testing with security-specific operators",
+  "variableMeasured": [
+    "mutation_score",
+    "vulnerability_detection_rate"
+  ],
+  "includedInDataCatalog": {
+    "@type": "DataCatalog",
+    "name": "HuggingFace Datasets"
+  },
+  "size": {
+    "value": 180,
+    "unitText": "samples"
+  },
+  "temporalCoverage": "2024/2025"
+}

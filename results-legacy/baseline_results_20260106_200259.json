@@ -1,0 +1,47 @@
+{
+  "timestamp": "20260106_200259",
+  "results": [
+    {
+      "model_name": "qwen2.5-coder:14b-instruct",
+      "provider": "ollama",
+      "samples_evaluated": 1,
+      "avg_mutation_score": 0.0,
+      "avg_vuln_detection": 0.0,
+      "avg_line_coverage": 0.6,
+      "avg_security_relevance": 0.78,
+      "avg_test_quality": 0.32,
+      "avg_composite_score": 0.29400000000000004,
+      "evaluation_time": 19.05579686164856,
+      "errors": 0,
+      "detailed_results": [
+        {
+          "sample_id": "cb18fb355e42",
+          "cwe": "CWE-79",
+          "difficulty": "easy",
+          "generated_tests": "def test_xss_script_injection():\n    payload = \"<script>alert('XSS')</script>\"\n    result = render_greeting(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload not in result, \"Payload should be escaped\"\n    assert html.escape(payload) in result, \"Escaped payload should be present\"\n\ndef test_xss_event_handlers():\n    payload = \"<img onerror='alert(1)' src=x>\"\n    result = render_greeting(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload not in result, \"Payload should be escaped\"\n    assert html.escape(payload) in result, \"Escaped payload should be present\"\n\ndef test_xss_svg_injection():\n    payload = \"<svg onload='alert(1)'>\"\n    result = render_greeting(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload not in result, \"Payload should be escaped\"\n    assert html.escape(payload) in result, \"Escaped payload should be present\"\n\ndef test_xss_data_uri():\n    payload = \"javascript:alert(1)\"\n    result = render_greeting(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload not in result, \"Payload should be escaped\"\n    assert html.escape(payload) in result, \"Escaped payload should be present\"\n\ndef test_xss_attribute_injection():\n    payload = \"' onclick='alert(1)\"\n    result = render_greeting(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload not in result, \"Payload should be escaped\"\n    assert html.escape(payload) in result, \"Escaped payload should be present\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": false,
+            "insecure_fails": true,
+            "vuln_detected": false,
+            "tests_count": 5,
+            "line_coverage": 0.6,
+            "lines_covered": 3,
+            "lines_total": 5,
+            "mutants_total": 0,
+            "mutants_killed": 0,
+            "mutation_score": 0.0,
+            "execution_time": 0.009846925735473633
+          }
+        }
+      ]
+    }
+  ],
+  "reference_baseline": {
+    "avg_mutation_score": 0.3758,
+    "avg_vuln_detection": 0.4118,
+    "avg_line_coverage": 0.746,
+    "avg_security_relevance": 0.29,
+    "avg_test_quality": 0.3767
+  }
+}

@@ -1,0 +1,556 @@
+{
+  "timestamp": "20260106_135438",
+  "results": [
+    {
+      "model_name": "qwen2.5-coder:14b-instruct",
+      "provider": "ollama",
+      "samples_evaluated": 27,
+      "avg_mutation_score": 0.5,
+      "avg_vuln_detection": 0.2222222222222222,
+      "avg_line_coverage": 0.6381072631072632,
+      "avg_security_relevance": 0.0,
+      "avg_test_quality": 0.0,
+      "avg_composite_score": 0.34571608946608945,
+      "evaluation_time": 670.06006026268,
+      "errors": 0,
+      "detailed_results": [
+        {
+          "sample_id": "151fa4b2b933",
+          "cwe": "CWE-89",
+          "difficulty": "medium",
+          "generated_tests": "def test_sql_injection_tautology():\n    payload = \"' OR '1'='1\"\n    result = get_user(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n\ndef test_sql_injection_union():\n    payload = \"' UNION SELECT * FROM users--\"\n    result = get_user(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n\ndef test_sql_injection_stacked_queries():\n    payload = \"'; DROP TABLE users;--\"\n    result = get_user(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n\ndef test_sql_injection_comment_truncation():\n    payload = \"admin'--\"\n    result = get_user(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n\ndef test_sql_injection_time_based_blind():\n    payload = \"' OR SLEEP(5)--\"\n    result = get_user(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n\ndef test_sql_injection_error_based():\n    payload = \"' AND 1=CONVERT(int,(SELECT TOP 1 table_name FROM information_schema.tables))--\"\n    result = get_user(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": true,
+            "insecure_fails": true,
+            "vuln_detected": true,
+            "tests_count": 6,
+            "line_coverage": 0.75,
+            "lines_covered": 3,
+            "lines_total": 4,
+            "mutants_total": 1,
+            "mutants_killed": 1,
+            "mutation_score": 1.0,
+            "execution_time": 0.011176109313964844
+          }
+        },
+        {
+          "sample_id": "9d84fa154f94",
+          "cwe": "CWE-89",
+          "difficulty": "medium",
+          "generated_tests": "def test_sql_injection_tautology():\n    payload = \"' OR '1'='1\"\n    result = search_products(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n    assert \"%{}%\".format(payload) in db.last_query, \"Parameterized query should include payload\"\n\ndef test_sql_injection_union():\n    payload = \"' UNION SELECT * FROM users--\"\n    result = search_products(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n    assert \"%{}%\".format(payload) in db.last_query, \"Parameterized query should include payload\"\n\ndef test_sql_injection_stacked_queries():\n    payload = \"'; DROP TABLE users;--\"\n    result = search_products(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n    assert \"%{}%\".format(payload) in db.last_query, \"Parameterized query should include payload\"\n\ndef test_sql_injection_comment_truncation():\n    payload = \"admin'--\"\n    result = search_products(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n    assert \"%{}%\".format(payload) in db.last_query, \"Parameterized query should include payload\"\n\ndef test_sql_injection_time_based_blind():\n    payload = \"' OR SLEEP(5)--\"\n    result = search_products(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n    assert \"%{}%\".format(payload) in db.last_query, \"Parameterized query should include payload\"\n\ndef test_sql_injection_error_based():\n    payload = \"' AND 1=CONVERT(int,(SELECT TOP 1 table_name FROM information_schema.tables))--\"\n    result = search_products(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n    assert \"%{}%\".format(payload) in db.last_query, \"Parameterized query should include payload\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": false,
+            "insecure_fails": true,
+            "vuln_detected": false,
+            "tests_count": 6,
+            "line_coverage": 0.75,
+            "lines_covered": 3,
+            "lines_total": 4,
+            "mutants_total": 1,
+            "mutants_killed": 1,
+            "mutation_score": 1.0,
+            "execution_time": 0.002953052520751953
+          }
+        },
+        {
+          "sample_id": "849cdc848416",
+          "cwe": "CWE-78",
+          "difficulty": "medium",
+          "generated_tests": "def test_os_command_injection_command_chaining():\n    hostname = \"example.com; rm -rf /\"\n    try:\n        ping_host(hostname)\n    except subprocess.CalledProcessError as e:\n        assert \"; rm -rf /\" not in e.cmd, \"Command chaining should be prevented\"\n\ndef test_os_command_injection_pipe_injection():\n    hostname = \"example.com | cat /etc/passwd\"\n    try:\n        ping_host(hostname)\n    except subprocess.CalledProcessError as e:\n        assert \"| cat /etc/passwd\" not in e.cmd, \"Pipe injection should be prevented\"\n\ndef test_os_command_injection_backtick_execution():\n    hostname = \"example.com `whoami`\"\n    try:\n        ping_host(hostname)\n    except subprocess.CalledProcessError as e:\n        assert \"`whoami`\" not in e.cmd, \"Backtick execution should be prevented\"\n\ndef test_os_command_injection_subshell():\n    hostname = \"example.com $(whoami)\"\n    try:\n        ping_host(hostname)\n    except subprocess.CalledProcessError as e:\n        assert \"$(whoami)\" not in e.cmd, \"Subshell should be prevented\"\n\ndef test_os_command_injection_newline_injection():\n    hostname = \"example.com%0als\"\n    try:\n        ping_host(hostname)\n    except subprocess.CalledProcessError as e:\n        assert \"%0als\" not in e.cmd, \"Newline injection should be prevented\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": false,
+            "insecure_fails": false,
+            "vuln_detected": false,
+            "tests_count": 5,
+            "line_coverage": 0.7142857142857143,
+            "lines_covered": 5,
+            "lines_total": 7,
+            "mutants_total": 2,
+            "mutants_killed": 2,
+            "mutation_score": 1.0,
+            "execution_time": 0.006654024124145508
+          }
+        },
+        {
+          "sample_id": "50334f05d562",
+          "cwe": "CWE-78",
+          "difficulty": "medium",
+          "generated_tests": "def test_os_command_injection_command_chaining():\n    payload = \"example.com; rm -rf /\"\n    try:\n        lookup_dns(payload)\n    except subprocess.CalledProcessError as e:\n        assert \"; rm -rf /\" not in e.cmd, \"Command chaining should be prevented\"\n\ndef test_os_command_injection_pipe_injection():\n    payload = \"example.com | cat /etc/passwd\"\n    try:\n        lookup_dns(payload)\n    except subprocess.CalledProcessError as e:\n        assert \"| cat /etc/passwd\" not in e.cmd, \"Pipe injection should be prevented\"\n\ndef test_os_command_injection_backtick_execution():\n    payload = \"example.com `whoami`\"\n    try:\n        lookup_dns(payload)\n    except subprocess.CalledProcessError as e:\n        assert \"`whoami`\" not in e.cmd, \"Backtick execution should be prevented\"\n\ndef test_os_command_injection_subshell():\n    payload = \"example.com $(whoami)\"\n    try:\n        lookup_dns(payload)\n    except subprocess.CalledProcessError as e:\n        assert \"$(whoami)\" not in e.cmd, \"Subshell should be prevented\"\n\ndef test_os_command_injection_newline_injection():\n    payload = \"example.com%0als\"\n    try:\n        lookup_dns(payload)\n    except subprocess.CalledProcessError as e:\n        assert \"%0als\" not in e.cmd, \"Newline injection should be prevented\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": false,
+            "insecure_fails": false,
+            "vuln_detected": false,
+            "tests_count": 5,
+            "line_coverage": 0.7142857142857143,
+            "lines_covered": 5,
+            "lines_total": 7,
+            "mutants_total": 2,
+            "mutants_killed": 2,
+            "mutation_score": 1.0,
+            "execution_time": 0.0037240982055664062
+          }
+        },
+        {
+          "sample_id": "5d0ad5d8233d",
+          "cwe": "CWE-22",
+          "difficulty": "medium",
+          "generated_tests": "def test_path_traversal_parent_traversal():\n    filename = \"../../../etc/passwd\"\n    try:\n        read_config(filename)\n    except ValueError as e:\n        assert str(e) == \"Path traversal detected\", \"Should raise Path traversal detected\"\n\ndef test_path_traversal_encoded_traversal():\n    filename = \"%2e%2e%2f..%c0%af/etc/passwd\"\n    try:\n        read_config(filename)\n    except ValueError as e:\n        assert str(e) == \"Path traversal detected\", \"Should raise Path traversal detected\"\n\ndef test_path_traversal_absolute_path():\n    filename = \"/etc/passwd\"\n    try:\n        read_config(filename)\n    except ValueError as e:\n        assert str(e) == \"Path traversal detected\", \"Should raise Path traversal detected\"\n\ndef test_path_traversal_null_byte():\n    filename = \"file.txt%00.jpg\"\n    try:\n        read_config(filename)\n    except ValueError as e:\n        assert str(e) == \"Path traversal detected\", \"Should raise Path traversal detected\"\n\ndef test_path_traversal_double_encoding():\n    filename = \"%252e%252e%252f..%c0%af/etc/passwd\"\n    try:\n        read_config(filename)\n    except ValueError as e:\n        assert str(e) == \"Path traversal detected\", \"Should raise Path traversal detected\"\n\ndef test_path_traversal_within_base_directory():\n    filename = \"config.txt\"\n    path = os.path.join(fs.base_dir, filename)\n    fs.read_file(path)  # MockFileSystem should return file contents\n    result = read_config(filename)\n    assert result is not None, \"File should be readable within base directory\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": false,
+            "insecure_fails": true,
+            "vuln_detected": false,
+            "tests_count": 6,
+            "line_coverage": 0.875,
+            "lines_covered": 7,
+            "lines_total": 8,
+            "mutants_total": 3,
+            "mutants_killed": 3,
+            "mutation_score": 1.0,
+            "execution_time": 0.002479076385498047
+          }
+        },
+        {
+          "sample_id": "337f130135ac",
+          "cwe": "CWE-79",
+          "difficulty": "medium",
+          "generated_tests": "def test_xss_script_injection():\n    payload = \"<script>alert('XSS')</script>\"\n    result = render_greeting(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload in result, \"Payload should be present in the output\"\n    assert \"&lt;script&gt;\" in result, \"Payload should be HTML-escaped\"\n\ndef test_xss_event_handlers():\n    payload = \"<img onerror=\\\"alert(1)\\\" src=x>\"\n    result = render_greeting(payload)\n    # Assert that event handlers are escaped and not executed\n    assert payload in result, \"Payload should be present in the output\"\n    assert \"&lt;img onerror=&quot;alert(1)&quot; src=x&gt;\" in result, \"Payload should be HTML-escaped\"\n\ndef test_xss_svg_injection():\n    payload = \"<svg onload=\\\"alert(1)\\\">\"\n    result = render_greeting(payload)\n    # Assert that SVG injection is escaped and not executed\n    assert payload in result, \"Payload should be present in the output\"\n    assert \"&lt;svg onload=&quot;alert(1)&quot;&gt;\" in result, \"Payload should be HTML-escaped\"\n\ndef test_xss_data_uri():\n    payload = \"javascript:alert(1)\"\n    result = render_greeting(payload)\n    # Assert that data URI is escaped and not executed\n    assert payload in result, \"Payload should be present in the output\"\n    assert \"javascript:alert(1)\" in result, \"Payload should be HTML-escaped\"\n\ndef test_xss_attribute_injection():\n    payload = \"\\\" onclick=\\\"alert(1)\"\n    result = render_greeting(payload)\n    # Assert that attribute injection is escaped and not executed\n    assert payload in result, \"Payload should be present in the output\"\n    assert \"&quot; onclick=&quot;alert(1)\" in result, \"Payload should be HTML-escaped\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": false,
+            "insecure_fails": true,
+            "vuln_detected": false,
+            "tests_count": 5,
+            "line_coverage": 0.6,
+            "lines_covered": 3,
+            "lines_total": 5,
+            "mutants_total": 0,
+            "mutants_killed": 0,
+            "mutation_score": 0.0,
+            "execution_time": 0.0029587745666503906
+          }
+        },
+        {
+          "sample_id": "a046d24d1e46",
+          "cwe": "CWE-327",
+          "difficulty": "easy",
+          "generated_tests": "def test_weak_hash_algorithm():\n    password = \"weakpassword123\"\n    hashed_password = hash_password(password)\n    # Assert that SHA-256 is used for hashing\n    assert len(hashed_password) == 64, \"SHA-256 should produce a 64-character hex digest\"\n\ndef test_hash_collision():\n    password1 = \"password\"\n    password2 = \"passw0rd\"\n    hashed_password1 = hash_password(password1)\n    hashed_password2 = hash_password(password2)\n    # Assert that different inputs produce different hashes\n    assert hashed_password1 != hashed_password2, \"Different passwords should not produce the same hash\"\n\ndef test_hash_length_extension_attack():\n    password = \"shortpass\"\n    hashed_password = hash_password(password)\n    # Assert that SHA-256 is resistant to length extension attacks\n    # This is a theoretical attack vector for weak algorithms like MD5, but SHA-256 should be safe\n    assert len(hashed_password) == 64, \"SHA-256 should produce a 64-character hex digest\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": true,
+            "insecure_fails": true,
+            "vuln_detected": true,
+            "tests_count": 3,
+            "line_coverage": 0.5,
+            "lines_covered": 2,
+            "lines_total": 4,
+            "mutants_total": 1,
+            "mutants_killed": 1,
+            "mutation_score": 1.0,
+            "execution_time": 0.0021469593048095703
+          }
+        },
+        {
+          "sample_id": "ecd1924c9cef",
+          "cwe": "CWE-327",
+          "difficulty": "easy",
+          "generated_tests": "def test_weak_cryptographic_algorithm():\n    token = generate_token()\n    # Assert that the token is 64 characters long (32 bytes * 2 hex digits)\n    assert len(token) == 64, \"Token length should be 64 characters\"\n\ndef test_use_of_strong_randomness():\n    token1 = generate_token()\n    token2 = generate_token()\n    # Assert that two generated tokens are different\n    assert token1 != token2, \"Tokens should be different\"\n\ndef test_no_weak_algorithms_used():\n    # Check if the function uses a weak cryptographic algorithm\n    # Since secrets.token_hex is used, which is secure, this test will pass\n    assert True, \"No weak cryptographic algorithms should be used\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": true,
+            "insecure_fails": true,
+            "vuln_detected": true,
+            "tests_count": 3,
+            "line_coverage": 0.5,
+            "lines_covered": 2,
+            "lines_total": 4,
+            "mutants_total": 0,
+            "mutants_killed": 0,
+            "mutation_score": 0.0,
+            "execution_time": 0.001188039779663086
+          }
+        },
+        {
+          "sample_id": "213ffbe512c8",
+          "cwe": "CWE-798",
+          "difficulty": "easy",
+          "generated_tests": "def test_hardcoded_password():\n    # Mock environment variable to simulate a hardcoded password\n    env = {\"DB_PASSWORD\": \"admin123\"}\n    \n    def get_db_password():\n        \"\"\"Get database password from environment variable.\"\"\"\n        password = env.get(\"DB_PASSWORD\")\n        if password is None:\n            raise ValueError(\"DB_PASSWORD environment variable not set\")\n        return password\n    \n    try:\n        password = get_db_password()\n        assert password != \"admin123\", \"Hardcoded password detected\"\n    except AssertionError as e:\n        print(e)\n\ndef test_api_key_in_code():\n    # Mock environment variable to simulate an API key in code\n    env = {\"API_KEY\": \"sk-abcdefg\"}\n    \n    def get_api_key():\n        \"\"\"Get API key from environment variable.\"\"\"\n        api_key = env.get(\"API_KEY\")\n        if api_key is None:\n            raise ValueError(\"API_KEY environment variable not set\")\n        return api_key\n    \n    try:\n        api_key = get_api_key()\n        assert api_key != \"sk-abcdefg\", \"Hardcoded API key detected\"\n    except AssertionError as e:\n        print(e)\n\ndef test_default_credentials():\n    # Mock environment variable to simulate default credentials\n    env = {\"DB_USER\": \"admin\", \"DB_PASSWORD\": \"admin\"}\n    \n    def get_db_credentials():\n        \"\"\"Get database credentials from environment variables.\"\"\"\n        user = env.get(\"DB_USER\")\n        password = env.get(\"DB_PASSWORD\")\n        if user is None or password is None:\n            raise ValueError(\"DB_USER or DB_PASSWORD environment variable not set\")\n        return user, password\n    \n    try:\n        user, password = get_db_credentials()\n        assert (user != \"admin\" or password != \"admin\"), \"Default credentials detected\"\n    except AssertionError as e:\n        print(e)\n\ndef test_secrets_in_config_files():\n    # Mock file system to simulate secrets in config files\n    fs = {\n        \"/app/data/config.json\": '{\"DB_PASSWORD\": \"secret123\"}'\n    }\n    \n    def read_config_file(path):\n        \"\"\"Read configuration from a JSON file.\"\"\"\n        if path != \"/app/data/config.json\":\n            raise ValueError(\"Invalid configuration file path\")\n        content = fs.get(path)\n        if content is None:\n            raise FileNotFoundError(f\"File {path} not found\")\n        return json.loads(content)\n    \n    try:\n        config = read_config_file(\"/app/data/config.json\")\n        assert config[\"DB_PASSWORD\"] != \"secret123\", \"Secrets in configuration file detected\"\n    except AssertionError as e:\n        print(e)\n\ndef test_base64_encoded_credentials():\n    # Mock environment variable to simulate base64 encoded credentials\n    env = {\"ENCODED_CREDENTIALS\": \"YWRtaW4xMjM=\"}\n    \n    def get_decoded_password(encoded):\n        \"\"\"Decode base64 encoded password.\"\"\"\n        import base64\n        return base64.b64decode(encoded).decode('utf-8')\n    \n    try:\n        encoded = env.get(\"ENCODED_CREDENTIALS\")\n        if encoded is None:\n            raise ValueError(\"ENCODED_CREDENTIALS environment variable not set\")\n        decoded_password = get_decoded_password(encoded)\n        assert decoded_password != \"admin123\", \"Base64 encoded credentials detected\"\n    except AssertionError as e:\n        print(e)\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": true,
+            "insecure_fails": false,
+            "vuln_detected": false,
+            "tests_count": 5,
+            "line_coverage": 0.3333333333333333,
+            "lines_covered": 2,
+            "lines_total": 6,
+            "mutants_total": 0,
+            "mutants_killed": 0,
+            "mutation_score": 0.0,
+            "execution_time": 0.0018880367279052734
+          }
+        },
+        {
+          "sample_id": "3e769fa9c357",
+          "cwe": "CWE-798",
+          "difficulty": "easy",
+          "generated_tests": "def test_hardcoded_api_key_in_source():\n    # Simulate a scenario where the API key is hardcoded in the source code\n    def get_api_key():\n        \"\"\"Get API key from environment variable.\"\"\"\n        api_key = \"sk-1234567890abcdef\"  # Hardcoded API key\n        return api_key\n\n    try:\n        get_api_key()\n    except ValueError as e:\n        assert str(e) == \"API_KEY environment variable not set\", \"Exception message should indicate missing env var\"\n    else:\n        assert False, \"Expected ValueError to be raised for hardcoded API key\"\n\ndef test_default_credentials_in_source():\n    # Simulate a scenario where default credentials are hardcoded in the source code\n    def get_api_key():\n        \"\"\"Get API key from environment variable.\"\"\"\n        api_key = \"admin/admin\"  # Hardcoded default credentials\n        return api_key\n\n    try:\n        get_api_key()\n    except ValueError as e:\n        assert str(e) == \"API_KEY environment variable not set\", \"Exception message should indicate missing env var\"\n    else:\n        assert False, \"Expected ValueError to be raised for hardcoded default credentials\"\n\ndef test_secrets_in_config_files():\n    # Simulate a scenario where secrets are stored in a config file\n    fs.write_file(\"/app/data/config.json\", '{\"API_KEY\": \"sk-abcdef1234567890\"}')\n\n    def get_api_key():\n        \"\"\"Get API key from environment variable.\"\"\"\n        import json\n        with open(\"/app/data/config.json\") as f:\n            config = json.load(f)\n        api_key = config.get(\"API_KEY\")\n        if api_key is None:\n            raise ValueError(\"API_KEY not found in config file\")\n        return api_key\n\n    try:\n        get_api_key()\n    except ValueError as e:\n        assert str(e) == \"API_KEY not found in config file\", \"Exception message should indicate missing API key in config\"\n    else:\n        assert False, \"Expected ValueError to be raised for hardcoded secret in config file\"\n\ndef test_base64_encoded_credentials():\n    # Simulate a scenario where credentials are base64 encoded\n    def get_api_key():\n        \"\"\"Get API key from environment variable.\"\"\"\n        import base64\n        api_key = base64.b64decode(\"YWRtaW4vYWRtaW4=\").decode()  # Base64 encoded default credentials\n        return api_key\n\n    try:\n        get_api_key()\n    except ValueError as e:\n        assert str(e) == \"API_KEY environment variable not set\", \"Exception message should indicate missing env var\"\n    else:\n        assert False, \"Expected ValueError to be raised for base64 encoded credentials\"\n\ndef test_secure_api_key_retrieval():\n    # Simulate a scenario where the API key is securely retrieved from an environment variable\n    import os\n    os.environ[\"API_KEY\"] = \"sk-secure1234567890abcdef\"\n\n    def get_api_key():\n        \"\"\"Get API key from environment variable.\"\"\"\n        api_key = os.getenv(\"API_KEY\")\n        if api_key is None:\n            raise ValueError(\"API_KEY environment variable not set\")\n        return api_key\n\n    try:\n        api_key = get_api_key()\n        assert api_key == \"sk-secure1234567890abcdef\", \"API key should match the one in the environment variable\"\n    except Exception as e:\n        assert False, f\"Unexpected exception: {e}\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": false,
+            "insecure_fails": true,
+            "vuln_detected": false,
+            "tests_count": 5,
+            "line_coverage": 0.5,
+            "lines_covered": 3,
+            "lines_total": 6,
+            "mutants_total": 0,
+            "mutants_killed": 0,
+            "mutation_score": 0.0,
+            "execution_time": 0.0028579235076904297
+          }
+        },
+        {
+          "sample_id": "bbc4ccca83cd",
+          "cwe": "CWE-20",
+          "difficulty": "easy",
+          "generated_tests": "def test_invalid_age_string():\n    \"\"\"Test with a non-numeric age input.\"\"\"\n    try:\n        process_age(\"abc\")\n    except ValueError as e:\n        assert str(e) == \"Invalid age input: invalid literal for int() with base 10: 'abc'\", \"Incorrect error message\"\n    else:\n        assert False, \"Expected ValueError not raised\"\n\ndef test_negative_age():\n    \"\"\"Test with a negative age.\"\"\"\n    try:\n        process_age(-5)\n    except ValueError as e:\n        assert str(e) == \"Invalid age input: Age must be between 0 and 150\", \"Incorrect error message\"\n    else:\n        assert False, \"Expected ValueError not raised\"\n\ndef test_age_above_limit():\n    \"\"\"Test with an age above the upper limit.\"\"\"\n    try:\n        process_age(151)\n    except ValueError as e:\n        assert str(e) == \"Invalid age input: Age must be between 0 and 150\", \"Incorrect error message\"\n    else:\n        assert False, \"Expected ValueError not raised\"\n\ndef test_boundary_zero():\n    \"\"\"Test with the boundary value of zero.\"\"\"\n    result = process_age(0)\n    assert result == \"User is 0 years old\", \"Boundary value 0 should be accepted\"\n\ndef test_boundary_max():\n    \"\"\"Test with the boundary value of 150.\"\"\"\n    result = process_age(150)\n    assert result == \"User is 150 years old\", \"Boundary value 150 should be accepted\"\n\ndef test_large_number_input():\n    \"\"\"Test with a very large number input.\"\"\"\n    try:\n        process_age(\"9999999999999999999999999999999",
+          "metrics": {
+            "valid_tests": false
+          }
+        },
+        {
+          "sample_id": "3fec8009d194",
+          "cwe": "CWE-20",
+          "difficulty": "easy",
+          "generated_tests": "def test_negative_quantity():\n    \"\"\"Test handling of negative quantity input.\"\"\"\n    try:\n        parse_quantity(\"-10\")\n    except ValueError as e:\n        assert str(e) == \"Invalid quantity: Quantity must be positive\", \"Negative quantity should raise appropriate error\"\n\ndef test_zero_quantity():\n    \"\"\"Test handling of zero quantity input.\"\"\"\n    try:\n        parse_quantity(\"0\")\n    except ValueError as e:\n        assert str(e) == \"Invalid quantity: Quantity must be positive\", \"Zero quantity should raise appropriate error\"\n\ndef test_excessive_quantity():\n    \"\"\"Test handling of excessive quantity input.\"\"\"\n    try:\n        parse_quantity(\"10001\")\n    except ValueError as e:\n        assert str(e) == \"Invalid quantity: Quantity exceeds maximum allowed\", \"Excessive quantity should raise appropriate error\"\n\ndef test_non_numeric_input():\n    \"\"\"Test handling of non-numeric input.\"\"\"\n    try:\n        parse_quantity(\"abc\")\n    except ValueError as e:\n        assert str(e) == \"Invalid quantity: invalid literal for int() with base 10: 'abc'\", \"Non-numeric input should raise appropriate error\"\n\ndef test_large_numeric_input():\n    \"\"\"Test handling of very large numeric input.\"\"\"\n    try:\n        parse_quantity(\"999999999999999999999999999999\")\n    except ValueError as e:\n        assert str(e) == \"Invalid quantity: invalid literal for int() with base 10: '999999999999999999999999999999'\", \"Very large numeric input should raise appropriate error\"\n\ndef test_boundary_condition_max():\n    \"\"\"Test boundary condition at maximum allowed quantity.\"\"\"\n    try:\n        parse_quantity(\"10000\")\n        assert True, \"Maximum allowed quantity should be accepted\"\n    except ValueError as e:\n        assert False, f\"Unexpected error for maximum allowed quantity: {e}\"\n\ndef test_boundary_condition_min():\n    \"\"\"Test boundary condition just above minimum allowed quantity.\"\"\"\n    try:\n        parse_quantity(\"1\")\n        assert True, \"Minimum allowed quantity should be accepted\"\n    except ValueError as e:\n        assert False, f\"Unexpected error for minimum allowed quantity: {e}\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": false,
+            "insecure_fails": true,
+            "vuln_detected": false,
+            "tests_count": 7,
+            "line_coverage": 0.8181818181818182,
+            "lines_covered": 9,
+            "lines_total": 11,
+            "mutants_total": 0,
+            "mutants_killed": 0,
+            "mutation_score": 0.0,
+            "execution_time": 0.003216266632080078
+          }
+        },
+        {
+          "sample_id": "115828bb32a4",
+          "cwe": "CWE-89",
+          "difficulty": "medium",
+          "generated_tests": "def test_sql_injection_tautology():\n    payload = \"' OR '1'='1\"\n    result = delete_user(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n\ndef test_sql_injection_union_injection():\n    payload = \"' UNION SELECT * FROM users--\"\n    result = delete_user(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n\ndef test_sql_injection_stacked_queries():\n    payload = \"'; DROP TABLE users;--\"\n    result = delete_user(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n\ndef test_sql_injection_comment_truncation():\n    payload = \"admin'--\"\n    result = delete_user(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n\ndef test_sql_injection_time_based_blind():\n    payload = \"' OR SLEEP(5)--\"\n    result = delete_user(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n\ndef test_sql_injection_error_based():\n    payload = \"' AND 1=CONVERT(int,(SELECT TOP 1 table_name FROM information_schema.tables))--\"\n    result = delete_user(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": true,
+            "insecure_fails": true,
+            "vuln_detected": true,
+            "tests_count": 6,
+            "line_coverage": 0.75,
+            "lines_covered": 3,
+            "lines_total": 4,
+            "mutants_total": 1,
+            "mutants_killed": 1,
+            "mutation_score": 1.0,
+            "execution_time": 0.003132343292236328
+          }
+        },
+        {
+          "sample_id": "cbeebfefb1d5",
+          "cwe": "CWE-89",
+          "difficulty": "medium",
+          "generated_tests": "def test_sql_injection_tautology():\n    payload = \"' OR '1'='1\"\n    result = update_email(payload, \"hacker@example.com\")\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n    assert db.query_count == 1, \"Only one query should be executed\"\n\ndef test_sql_injection_union():\n    payload = \"' UNION SELECT * FROM users--\"\n    result = update_email(payload, \"hacker@example.com\")\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n    assert db.query_count == 1, \"Only one query should be executed\"\n\ndef test_sql_injection_stacked_queries():\n    payload = \"'; DROP TABLE users;--\"\n    result = update_email(payload, \"hacker@example.com\")\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n    assert db.query_count == 1, \"Only one query should be executed\"\n\ndef test_sql_injection_comment_truncation():\n    payload = \"admin'--\"\n    result = update_email(payload, \"hacker@example.com\")\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n    assert db.query_count == 1, \"Only one query should be executed\"\n\ndef test_sql_injection_time_based():\n    payload = \"' OR SLEEP(5)--\"\n    result = update_email(payload, \"hacker@example.com\")\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n    assert db.query_count == 1, \"Only one query should be executed\"\n\ndef test_sql_injection_error_based():\n    payload = \"' AND 1=CONVERT(int,(SELECT TOP 1 table_name FROM information_schema.tables))--\"\n    result = update_email(payload, \"hacker@example.com\")\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n    assert db.query_count == 1, \"Only one query should be executed\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": false,
+            "insecure_fails": true,
+            "vuln_detected": false,
+            "tests_count": 6,
+            "line_coverage": 0.75,
+            "lines_covered": 3,
+            "lines_total": 4,
+            "mutants_total": 1,
+            "mutants_killed": 1,
+            "mutation_score": 1.0,
+            "execution_time": 0.004069805145263672
+          }
+        },
+        {
+          "sample_id": "e9ea9bd98395",
+          "cwe": "CWE-89",
+          "difficulty": "medium",
+          "generated_tests": "def test_sql_injection_tautology():\n    payload = \"' OR '1'='1\"\n    result = count_orders(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n\ndef test_sql_injection_union_injection():\n    payload = \"' UNION SELECT * FROM users--\"\n    result = count_orders(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n\ndef test_sql_injection_stacked_queries():\n    payload = \"'; DROP TABLE users;--\"\n    result = count_orders(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n\ndef test_sql_injection_comment_truncation():\n    payload = \"admin'--\"\n    result = count_orders(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n\ndef test_sql_injection_time_based_blind():\n    payload = \"' OR SLEEP(5)--\"\n    result = count_orders(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n\ndef test_sql_injection_error_based():\n    payload = \"' AND 1=CONVERT(int,(SELECT TOP 1 table_name FROM information_schema.tables))--\"\n    result = count_orders(payload)\n    # Assert that payload is passed as parameter, not in query string\n    assert payload not in db.last_query, \"Payload should not be in SQL query\"\n\ndef test_sql_injection_no_direct_concatenation():\n    # Ensure the function does not use direct concatenation\n    query = \"SELECT COUNT(*) FROM orders WHERE customer_id = ?\"\n    result = count_orders(1)\n    assert query == db.last_query, \"Query should use parameterized format\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": true,
+            "insecure_fails": true,
+            "vuln_detected": true,
+            "tests_count": 7,
+            "line_coverage": 0.8,
+            "lines_covered": 4,
+            "lines_total": 5,
+            "mutants_total": 1,
+            "mutants_killed": 1,
+            "mutation_score": 1.0,
+            "execution_time": 0.004281759262084961
+          }
+        },
+        {
+          "sample_id": "2d51c18d11e0",
+          "cwe": "CWE-78",
+          "difficulty": "hard",
+          "generated_tests": "def test_os_command_injection_command_chaining():\n    payload = \"; rm -rf /\"\n    try:\n        get_disk_usage(payload)\n    except ValueError as e:\n        assert str(e) == \"Invalid directory path\", \"Should raise ValueError for invalid directory\"\n\ndef test_os_command_injection_pipe_injection():\n    payload = \"| cat /etc/passwd\"\n    try:\n        get_disk_usage(payload)\n    except ValueError as e:\n        assert str(e) == \"Invalid directory path\", \"Should raise ValueError for invalid directory\"\n\ndef test_os_command_injection_backtick_execution():\n    payload = \"`whoami`\"\n    try:\n        get_disk_usage(payload)\n    except ValueError as e:\n        assert str(e) == \"Invalid directory path\", \"Should raise ValueError for invalid directory\"\n\ndef test_os_command_injection_subshell():\n    payload = \"$(whoami)\"\n    try:\n        get_disk_usage(payload)\n    except ValueError as e:\n        assert str(e) == \"Invalid directory path\", \"Should raise ValueError for invalid directory\"\n\ndef test_os_command_injection_newline_injection():\n    payload = \"%0als\"\n    try:\n        get_disk_usage(payload)\n    except ValueError as e:\n        assert str(e) == \"Invalid directory path\", \"Should raise ValueError for invalid directory\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": true,
+            "insecure_fails": false,
+            "vuln_detected": false,
+            "tests_count": 5,
+            "line_coverage": 0.5714285714285714,
+            "lines_covered": 4,
+            "lines_total": 7,
+            "mutants_total": 2,
+            "mutants_killed": 1,
+            "mutation_score": 0.5,
+            "execution_time": 0.0057830810546875
+          }
+        },
+        {
+          "sample_id": "6cba31f2050b",
+          "cwe": "CWE-78",
+          "difficulty": "hard",
+          "generated_tests": "def test_os_command_injection_command_chaining():\n    payload = \"; rm -rf /\"\n    try:\n        compress_file(payload)\n    except ValueError as e:\n        assert str(e) == \"Invalid filename\", \"Should raise ValueError for invalid filename\"\n\ndef test_os_command_injection_pipe_injection():\n    payload = \"| cat /etc/passwd\"\n    try:\n        compress_file(payload)\n    except ValueError as e:\n        assert str(e) == \"Invalid filename\", \"Should raise ValueError for invalid filename\"\n\ndef test_os_command_injection_backtick_execution():\n    payload = \"`whoami`\"\n    try:\n        compress_file(payload)\n    except ValueError as e:\n        assert str(e) == \"Invalid filename\", \"Should raise ValueError for invalid filename\"\n\ndef test_os_command_injection_subshell():\n    payload = \"$(whoami)\"\n    try:\n        compress_file(payload)\n    except ValueError as e:\n        assert str(e) == \"Invalid filename\", \"Should raise ValueError for invalid filename\"\n\ndef test_os_command_injection_newline_injection():\n    payload = \"%0als\"\n    try:\n        compress_file(payload)\n    except ValueError as e:\n        assert str(e) == \"Invalid filename\", \"Should raise ValueError for invalid filename\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": true,
+            "insecure_fails": false,
+            "vuln_detected": false,
+            "tests_count": 5,
+            "line_coverage": 0.5714285714285714,
+            "lines_covered": 4,
+            "lines_total": 7,
+            "mutants_total": 2,
+            "mutants_killed": 1,
+            "mutation_score": 0.5,
+            "execution_time": 0.004391908645629883
+          }
+        },
+        {
+          "sample_id": "8def5b528050",
+          "cwe": "CWE-78",
+          "difficulty": "hard",
+          "generated_tests": "def test_os_command_injection_command_chaining():\n    pattern = \"; rm -rf /\"\n    try:\n        list_processes(pattern)\n    except ValueError as e:\n        assert str(e) == \"Invalid pattern\", \"Should raise ValueError for invalid pattern\"\n\ndef test_os_command_injection_pipe_injection():\n    pattern = \"| cat /etc/passwd\"\n    try:\n        list_processes(pattern)\n    except ValueError as e:\n        assert str(e) == \"Invalid pattern\", \"Should raise ValueError for invalid pattern\"\n\ndef test_os_command_injection_backtick_execution():\n    pattern = \"`whoami`\"\n    try:\n        list_processes(pattern)\n    except ValueError as e:\n        assert str(e) == \"Invalid pattern\", \"Should raise ValueError for invalid pattern\"\n\ndef test_os_command_injection_subshell():\n    pattern = \"$(cat /etc/passwd)\"\n    try:\n        list_processes(pattern)\n    except ValueError as e:\n        assert str(e) == \"Invalid pattern\", \"Should raise ValueError for invalid pattern\"\n\ndef test_os_command_injection_newline_injection():\n    pattern = \"%0als\"\n    try:\n        list_processes(pattern)\n    except ValueError as e:\n        assert str(e) == \"Invalid pattern\", \"Should raise ValueError for invalid pattern\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": true,
+            "insecure_fails": false,
+            "vuln_detected": false,
+            "tests_count": 5,
+            "line_coverage": 0.625,
+            "lines_covered": 5,
+            "lines_total": 8,
+            "mutants_total": 2,
+            "mutants_killed": 1,
+            "mutation_score": 0.5,
+            "execution_time": 0.006310224533081055
+          }
+        },
+        {
+          "sample_id": "c74318b0c637",
+          "cwe": "CWE-22",
+          "difficulty": "medium",
+          "generated_tests": "def test_path_traversal_parent_traversal():\n    \"\"\"Test for parent directory traversal.\"\"\"\n    filename = \"../../../etc/passwd\"\n    try:\n        serve_static(filename)\n    except ValueError as e:\n        assert str(e) == \"Invalid path\", \"Should raise ValueError for invalid path\"\n\ndef test_path_traversal_encoded_traversal():\n    \"\"\"Test for encoded directory traversal.\"\"\"\n    filename = \"%2e%2e%2fetc/passwd\"\n    try:\n        serve_static(filename)\n    except ValueError as e:\n        assert str(e) == \"Invalid path\", \"Should raise ValueError for invalid path\"\n\ndef test_path_traversal_absolute_path():\n    \"\"\"Test for absolute path traversal.\"\"\"\n    filename = \"/etc/passwd\"\n    try:\n        serve_static(filename)\n    except ValueError as e:\n        assert str(e) == \"Invalid path\", \"Should raise ValueError for invalid path\"\n\ndef test_path_traversal_null_byte():\n    \"\"\"Test for null byte injection.\"\"\"\n    filename = \"file.txt%00.jpg\"\n    try:\n        serve_static(filename)\n    except ValueError as e:\n        assert str(e) == \"Invalid path\", \"Should raise ValueError for invalid path\"\n\ndef test_path_traversal_double_encoding():\n    \"\"\"Test for double encoded traversal.\"\"\"\n    filename = \"%252e%252e%252fetc/passwd\"\n    try:\n        serve_static(filename)\n    except ValueError as e:\n        assert str(e) == \"Invalid path\", \"Should raise ValueError for invalid path\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": true,
+            "insecure_fails": false,
+            "vuln_detected": false,
+            "tests_count": 5,
+            "line_coverage": 0.875,
+            "lines_covered": 7,
+            "lines_total": 8,
+            "mutants_total": 3,
+            "mutants_killed": 0,
+            "mutation_score": 0.0,
+            "execution_time": 0.008098125457763672
+          }
+        },
+        {
+          "sample_id": "c95b46e73655",
+          "cwe": "CWE-22",
+          "difficulty": "medium",
+          "generated_tests": "def test_path_traversal_parent_traversal():\n    payload = \"../../../etc/passwd\"\n    try:\n        load_template(payload)\n    except ValueError as e:\n        assert str(e) == \"Invalid template path\", \"Should raise ValueError for invalid path\"\n\ndef test_path_traversal_encoded_traversal():\n    payload = \"%2e%2e%2f..%c0%af/etc/passwd\"\n    try:\n        load_template(payload)\n    except ValueError as e:\n        assert str(e) == \"Invalid template path\", \"Should raise ValueError for invalid path\"\n\ndef test_path_traversal_absolute_path():\n    payload = \"/etc/passwd\"\n    try:\n        load_template(payload)\n    except ValueError as e:\n        assert str(e) == \"Invalid template path\", \"Should raise ValueError for invalid path\"\n\ndef test_path_traversal_null_byte():\n    payload = \"file.txt%00.jpg\"\n    try:\n        load_template(payload)\n    except ValueError as e:\n        assert str(e) == \"Only HTML templates allowed\", \"Should raise ValueError for non-HTML file\"\n\ndef test_path_traversal_double_encoding():\n    payload = \"%252e%252e%252fetc/passwd\"\n    try:\n        load_template(payload)\n    except ValueError as e:\n        assert str(e) == \"Invalid template path\", \"Should raise ValueError for invalid path\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": false,
+            "insecure_fails": false,
+            "vuln_detected": false,
+            "tests_count": 5,
+            "line_coverage": 0.9,
+            "lines_covered": 9,
+            "lines_total": 10,
+            "mutants_total": 3,
+            "mutants_killed": 3,
+            "mutation_score": 1.0,
+            "execution_time": 0.005099058151245117
+          }
+        },
+        {
+          "sample_id": "7d6e28fef761",
+          "cwe": "CWE-79",
+          "difficulty": "medium",
+          "generated_tests": "def test_xss_script_injection():\n    payload = \"<script>alert('XSS')</script>\"\n    result = display_comment(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload in result, \"Payload should be present in the output\"\n    assert \"&lt;script&gt;alert(&#x27;XSS&#x27;)&lt;/script&gt;\" in result, \"Payload should be HTML-escaped\"\n\ndef test_xss_event_handlers():\n    payload = \"<img onerror=\\\"alert(1)\\\" src=x>\"\n    result = display_comment(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload in result, \"Payload should be present in the output\"\n    assert \"&lt;img onerror=&quot;alert(1)&quot; src=x&gt;\" in result, \"Payload should be HTML-escaped\"\n\ndef test_xss_svg_injection():\n    payload = \"<svg onload=\\\"alert(1)\\\">\"\n    result = display_comment(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload in result, \"Payload should be present in the output\"\n    assert \"&lt;svg onload=&quot;alert(1)&quot;&gt;\" in result, \"Payload should be HTML-escaped\"\n\ndef test_xss_data_uri():\n    payload = \"<a href=\\\"javascript:alert(1)\\\">Click me</a>\"\n    result = display_comment(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload in result, \"Payload should be present in the output\"\n    assert \"&lt;a href=&quot;javascript:alert(1)&quot;&gt;Click me&lt;/a&gt;\" in result, \"Payload should be HTML-escaped\"\n\ndef test_xss_attribute_injection():\n    payload = \"<div onclick=\\\"alert(1)\\\">Hover over me</div>\"\n    result = display_comment(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload in result, \"Payload should be present in the output\"\n    assert \"&lt;div onclick=&quot;alert(1)&quot;&gt;Hover over me&lt;/div&gt;\" in result, \"Payload should be HTML-escaped\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": false,
+            "insecure_fails": true,
+            "vuln_detected": false,
+            "tests_count": 5,
+            "line_coverage": 0.6,
+            "lines_covered": 3,
+            "lines_total": 5,
+            "mutants_total": 0,
+            "mutants_killed": 0,
+            "mutation_score": 0.0,
+            "execution_time": 0.00278472900390625
+          }
+        },
+        {
+          "sample_id": "c4cd65b81656",
+          "cwe": "CWE-79",
+          "difficulty": "medium",
+          "generated_tests": "def test_xss_script_injection():\n    payload = \"<script>alert('XSS')</script>\"\n    result = render_title(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload not in result, \"Payload should be escaped\"\n    assert html.escape(payload) in result, \"Escaped payload should be present\"\n\ndef test_xss_event_handlers():\n    payload = \"<img onerror='alert(1)' src=x>\"\n    result = render_title(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload not in result, \"Payload should be escaped\"\n    assert html.escape(payload) in result, \"Escaped payload should be present\"\n\ndef test_xss_svg_injection():\n    payload = \"<svg onload='alert(1)'>\"\n    result = render_title(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload not in result, \"Payload should be escaped\"\n    assert html.escape(payload) in result, \"Escaped payload should be present\"\n\ndef test_xss_data_uri():\n    payload = \"javascript:alert(1)\"\n    result = render_title(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload not in result, \"Payload should be escaped\"\n    assert html.escape(payload) in result, \"Escaped payload should be present\"\n\ndef test_xss_attribute_injection():\n    payload = \"' onclick='alert(1)\"\n    result = render_title(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload not in result, \"Payload should be escaped\"\n    assert html.escape(payload) in result, \"Escaped payload should be present\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": false,
+            "insecure_fails": true,
+            "vuln_detected": false,
+            "tests_count": 5,
+            "line_coverage": 0.6,
+            "lines_covered": 3,
+            "lines_total": 5,
+            "mutants_total": 0,
+            "mutants_killed": 0,
+            "mutation_score": 0.0,
+            "execution_time": 0.003354787826538086
+          }
+        },
+        {
+          "sample_id": "f710dd0e1cc5",
+          "cwe": "CWE-79",
+          "difficulty": "medium",
+          "generated_tests": "def test_xss_script_injection():\n    payload = \"<script>alert('XSS')</script>\"\n    result = format_error(payload)\n    # Assert that the payload is escaped and not executed as script\n    assert payload in result, \"Payload should be present in the output\"\n    assert \"&lt;script&gt;\" in result, \"Payload should be HTML-escaped\"\n\ndef test_xss_event_handlers():\n    payload = \"<img onerror='alert(1)' src=x>\"\n    result = format_error(payload)\n    # Assert that event handlers are escaped and not executed\n    assert payload in result, \"Payload should be present in the output\"\n    assert \"&lt;img onerror=&#x27;alert(1)&#x27; src=x&gt;\" in result, \"Event handler should be HTML-escaped\"\n\ndef test_xss_svg_injection():\n    payload = \"<svg onload='alert(1)'>\"\n    result = format_error(payload)\n    # Assert that SVG tags are escaped and not executed\n    assert payload in result, \"Payload should be present in the output\"\n    assert \"&lt;svg onload=&#x27;alert(1)&#x27;&gt;\" in result, \"SVG tag should be HTML-escaped\"\n\ndef test_xss_data_uri():\n    payload = \"javascript:alert(1)\"\n    result = format_error(payload)\n    # Assert that data URIs are escaped and not executed\n    assert payload in result, \"Payload should be present in the output\"\n    assert \"javascript:alert(1)\" in result, \"Data URI should be HTML-escaped\"\n\ndef test_xss_attribute_injection():\n    payload = \"\\\" onclick=\\\"alert(1)\"\n    result = format_error(payload)\n    # Assert that attribute injections are escaped and not executed\n    assert payload in result, \"Payload should be present in the output\"\n    assert \"&quot; onclick=&quot;alert(1)\" in result, \"Attribute injection should be HTML-escaped\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": false,
+            "insecure_fails": true,
+            "vuln_detected": false,
+            "tests_count": 5,
+            "line_coverage": 0.6,
+            "lines_covered": 3,
+            "lines_total": 5,
+            "mutants_total": 0,
+            "mutants_killed": 0,
+            "mutation_score": 0.0,
+            "execution_time": 0.0029611587524414062
+          }
+        },
+        {
+          "sample_id": "f09aba66db4e",
+          "cwe": "CWE-327",
+          "difficulty": "medium",
+          "generated_tests": "def test_weak_hash_algorithm():\n    # Test if the function uses a weak cryptographic algorithm\n    data = \"test_data\"\n    hashed_data = hash_data(data)\n    assert len(hashed_data) == 64, \"SHA-256 should produce a 64-character hex digest\"\n\ndef test_collision_resistance():\n    # Test collision resistance by checking if two different inputs produce the same output\n    data1 = \"test_data1\"\n    data2 = \"test_data2\"\n    assert hash_data(data1) != hash_data(data2), \"Different inputs should not produce the same hash\"\n\ndef test_preimage_resistance():\n    # Test preimage resistance by checking if we can deduce the input from the output\n    data = \"test_data\"\n    hashed_data = hash_data(data)\n    # Since SHA-256 is a one-way function, we cannot easily deduce the original input from the hash\n    assert hash_data(hashed_data) != hashed_data, \"Hashing the hash should not produce the same result\"\n\ndef test_input_validation():\n    # Test if the function handles invalid input gracefully\n    try:\n        hash_data(None)\n    except AttributeError as e:\n        assert str(e) == \"'NoneType' object has no attribute 'encode'\", \"Function should handle None input\"\n    else:\n        assert False, \"Function did not raise an exception for None input\"\n\ndef test_malformed_input():\n    # Test if the function handles malformed input gracefully\n    try:\n        hash_data(\"\")\n    except Exception as e:\n        assert str(e) == \"\", \"Function should handle empty string input without error\"\n    else:\n        assert True, \"Function handled empty string input correctly\"\n\ndef test_boundary_condition():\n    # Test boundary condition with very long input\n    long_input = \"a\" * 1024 * 1024  # 1 MB of 'a'\n    try:\n        hash_data(long_input)\n    except Exception as e:\n        assert str(e) == \"\", \"Function should handle large input without error\"\n    else:\n        assert True, \"Function handled large input correctly\"\n\ndef test_hash_algorithm_strength():\n    # Test if the function uses a strong cryptographic algorithm\n    data = \"test_data\"\n    hashed_data = hash_data(data)\n    assert len(hashed_data) == 64, \"SHA-256 should produce a 64-character hex digest\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": true,
+            "insecure_fails": true,
+            "vuln_detected": true,
+            "tests_count": 7,
+            "line_coverage": 0.75,
+            "lines_covered": 3,
+            "lines_total": 4,
+            "mutants_total": 1,
+            "mutants_killed": 1,
+            "mutation_score": 1.0,
+            "execution_time": 0.01364588737487793
+          }
+        },
+        {
+          "sample_id": "501fe452d904",
+          "cwe": "CWE-327",
+          "difficulty": "medium",
+          "generated_tests": "def test_weak_hmac_algorithm():\n    # Test using a weak cryptographic algorithm (e.g., MD5)\n    def sign_message_with_md5(message, key):\n        return hmac.new(key.encode(), message.encode(), hashlib.md5).hexdigest()\n\n    try:\n        sign_message_with_md5(\"test\", \"key\")\n        assert False, \"Test should fail for using weak cryptographic algorithm\"\n    except Exception as e:\n        assert str(e) == \"Use of weak cryptographic algorithm detected\", \"Exception message does not match expected\"\n\ndef test_hmac_algorithm_strength():\n    # Test using a strong cryptographic algorithm (e.g., SHA256)\n    def sign_message_with_sha256(message, key):\n        return hmac.new(key.encode(), message.encode(), hashlib.sha256).hexdigest()\n\n    try:\n        result = sign_message_with_sha256(\"test\", \"key\")\n        assert len(result) == 64, \"HMAC-SHA256 should produce a 64-character hash\"\n    except Exception as e:\n        assert False, f\"Unexpected exception: {str(e)}\"\n\ndef test_hmac_algorithm_collision():\n    # Test for collision resistance in HMAC\n    def sign_message_with_sha256(message, key):\n        return hmac.new(key.encode(), message.encode(), hashlib.sha256).hexdigest()\n\n    message1 = \"test\"\n    message2 = \"another_test\"\n    key = \"key\"\n\n    hash1 = sign_message_with_sha256(message1, key)\n    hash2 = sign_message_with_sha256(message2, key)\n\n    assert hash1 != hash2, \"HMAC should produce different hashes for different messages\"\n\ndef test_hmac_algorithm_key_length():\n    # Test using a very short key\n    def sign_message_with_short_key(message, key):\n        return hmac.new(key.encode(), message.encode(), hashlib.sha256).hexdigest()\n\n    try:\n        result = sign_message_with_short_key(\"test\", \"k\")\n        assert len(result) == 64, \"HMAC-SHA256 should produce a 64-character hash even with short key\"\n    except Exception as e:\n        assert False, f\"Unexpected exception: {str(e)}\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": false,
+            "insecure_fails": true,
+            "vuln_detected": false,
+            "tests_count": 4,
+            "line_coverage": 0.4,
+            "lines_covered": 2,
+            "lines_total": 5,
+            "mutants_total": 1,
+            "mutants_killed": 1,
+            "mutation_score": 1.0,
+            "execution_time": 0.004678010940551758
+          }
+        },
+        {
+          "sample_id": "c53056530c89",
+          "cwe": "CWE-798",
+          "difficulty": "medium",
+          "generated_tests": "def test_hardcoded_secret_key():\n    # Simulate a scenario where the secret key is hardcoded in the code\n    env[\"SECRET_KEY\"] = \"hardcoded_secret_key\"\n    try:\n        get_secret_key()\n    except ValueError as e:\n        assert str(e) == \"SECRET_KEY not set\", \"ValueError should be raised if SECRET_KEY is hardcoded\"\n\ndef test_missing_secret_key():\n    # Simulate a scenario where the secret key is not set in the environment\n    env.pop(\"SECRET_KEY\", None)\n    try:\n        get_secret_key()\n    except ValueError as e:\n        assert str(e) == \"SECRET_KEY not set\", \"ValueError should be raised if SECRET_KEY is missing\"\n\ndef test_base64_encoded_secret_key():\n    # Simulate a scenario where the secret key is base64 encoded in the environment\n    import base64\n    env[\"SECRET_KEY\"] = base64.b64encode(b\"base64_encoded_secret\").decode()\n    try:\n        get_secret_key()\n    except ValueError as e:\n        assert str(e) == \"SECRET_KEY not set\", \"ValueError should be raised if SECRET_KEY is base64 encoded\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": true,
+            "insecure_fails": false,
+            "vuln_detected": false,
+            "tests_count": 3,
+            "line_coverage": 0.6666666666666666,
+            "lines_covered": 4,
+            "lines_total": 6,
+            "mutants_total": 0,
+            "mutants_killed": 0,
+            "mutation_score": 0.0,
+            "execution_time": 0.0019540786743164062
+          }
+        },
+        {
+          "sample_id": "a034d79617bf",
+          "cwe": "CWE-798",
+          "difficulty": "medium",
+          "generated_tests": "def test_hardcoded_credentials_base64():\n    # Simulate a scenario where the encryption key is hardcoded as base64\n    env = {\"ENCRYPTION_KEY\": \"SGVsbG8gV29ybGQh\"}  # Base64 for \"Hello World!\"\n    \n    try:\n        get_encryption_key()\n    except ValueError as e:\n        assert str(e) == \"ENCRYPTION_KEY not set\", \"Should raise ValueError if ENCRYPTION_KEY is hardcoded\"\n    else:\n        assert False, \"Expected ValueError to be raised\"\n\ndef test_hardcoded_credentials_default():\n    # Simulate a scenario where the encryption key uses default credentials\n    env = {\"ENCRYPTION_KEY\": base64.b64encode(b\"admin/admin\").decode()}  # Base64 for \"admin/admin\"\n    \n    try:\n        get_encryption_key()\n    except ValueError as e:\n        assert str(e) == \"ENCRYPTION_KEY not set\", \"Should raise ValueError if ENCRYPTION_KEY is hardcoded\"\n    else:\n        assert False, \"Expected ValueError to be raised\"\n\ndef test_hardcoded_credentials_api_key():\n    # Simulate a scenario where the encryption key uses an API key\n    env = {\"ENCRYPTION_KEY\": base64.b64encode(b\"sk-12345\").decode()}  # Base64 for \"sk-12345\"\n    \n    try:\n        get_encryption_key()\n    except ValueError as e:\n        assert str(e) == \"ENCRYPTION_KEY not set\", \"Should raise ValueError if ENCRYPTION_KEY is hardcoded\"\n    else:\n        assert False, \"Expected ValueError to be raised\"\n\ndef test_valid_encryption_key():\n    # Simulate a scenario where the encryption key is correctly set in the environment\n    env = {\"ENCRYPTION_KEY\": base64.b64encode(b\"secure-key\").decode()}  # Base64 for \"secure-key\"\n    \n    try:\n        key = get_encryption_key()\n        assert key == b\"secure-key\", \"Decoded key should match 'secure-key'\"\n    except Exception as e:\n        assert False, f\"Unexpected exception: {e}\"\n",
+          "metrics": {
+            "valid_tests": true,
+            "secure_passes": false,
+            "insecure_fails": true,
+            "vuln_detected": false,
+            "tests_count": 4,
+            "line_coverage": 0.7142857142857143,
+            "lines_covered": 5,
+            "lines_total": 7,
+            "mutants_total": 0,
+            "mutants_killed": 0,
+            "mutation_score": 0.0,
+            "execution_time": 0.0037271976470947266
+          }
+        }
+      ]
+    }
+  ],
+  "reference_baseline": {
+    "avg_mutation_score": 0.3758,
+    "avg_vuln_detection": 0.4118,
+    "avg_line_coverage": 0.746,
+    "avg_security_relevance": 0.29,
+    "avg_test_quality": 0.3767
+  }
+}

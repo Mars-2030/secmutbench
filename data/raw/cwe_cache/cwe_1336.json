@@ -1,0 +1,45 @@
+{
+  "cwe_id": "CWE-1336",
+  "name": "Improper Neutralization of Special Elements Used in a Template Engine",
+  "description": "The product uses a template engine to insert or process externally-influenced input, but it does not neutralize or incorrectly neutralizes special elements or syntax that can be interpreted as template expressions or other code directives when processed by the engine.",
+  "extended_description": "Many web applications use template engines that allow developers to insert externally-influenced values into free text or messages in order to generate a full web page, document, message, etc. Such engines include Twig, Jinja2, Pug, Java Server Pages, FreeMarker, Velocity, ColdFusion, Smarty, and many others - including PHP itself. Some CMS (Content Management Systems) also use templates.Template engines often have their own custom command or expression language. If an attacker can influence input into a template before it is processed, then the attacker can invoke arbitrary expressions, i.e. perform injection attacks. For example, in some template languages, an attacker could inject the expression \"{{7*7}}\" and determine if the output returns \"49\" instead. The syntax varies depending on the language.In some cases, XSS-style attacks can work, which can obscure the root cause if the developer does not closely investigate the root cause of the error.Template engines can be used on the server or client, so both \"sides\" could be affected by injection. The mechanisms of attack or the affected technologies might be different, but the mistake is fundamentally the same.",
+  "modes_of_introduction": [],
+  "common_consequences": [
+    {
+      "scope": "Execute Unauthorized Code or Commands",
+      "impact": "Scope: Integrity"
+    }
+  ],
+  "potential_mitigations": [
+    {
+      "phase": "Architecture and Design",
+      "strategy": "Choose a template engine that offers a sandbox or restricted mode, or at least limits the power of any available expressions, function calls, or commands.",
+      "description": ""
+    },
+    {
+      "phase": "Implementation",
+      "strategy": "Use the template engine's sandbox or restricted mode, if available.",
+      "description": ""
+    }
+  ],
+  "detection_methods": [
+    {
+      "method": "Automated Static Analysis",
+      "description": "Automated static analysis, commonly referred to as Static Application Security Testing (SAST), can find some instances of this weakness by analyzing source code (or binary/compiled code) without having to execute it. Typically, this is done by building a model of data flow and control flow, then searching for potentially-vulnerable patterns that connect \"sources\" (origins of input) with \"sinks\" (destinations where the data interacts with external components, a lower layer such as the OS, etc.)Effectiveness: High"
+    }
+  ],
+  "code_examples": [],
+  "related_cwes": [],
+  "related_attack_patterns": [],
+  "applicable_platforms": [
+    "Languages",
+    "Java(Undetermined Prevalence)PHP(Undetermined Prevalence)Python(Undetermined Prevalence)JavaScript(Undetermined Prevalence)Class: Interpreted(Undetermined Prevalence)",
+    "Operating Systems",
+    "Class: Not OS-Specific(Undetermined Prevalence)TechnologiesClass: Not Technology-Specific(Undetermined Prevalence)AI/ML(Undetermined Prevalence)Class: Client Server(Undetermined Prevalence)",
+    "Technologies",
+    "Class: Not Technology-Specific(Undetermined Prevalence)AI/ML(Undetermined Prevalence)Class: Client Server(Undetermined Prevalence)"
+  ],
+  "likelihood_of_exploit": "Unknown",
+  "url": "https://cwe.mitre.org/data/definitions/1336.html",
+  "fetched_at": "2026-01-06 19:37:58"
+}

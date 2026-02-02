@@ -1,0 +1,105 @@
+{
+  "cwe_id": "CWE-352",
+  "name": "Cross-Site Request Forgery (CSRF)",
+  "description": "The web application does not, or cannot, sufficiently verify whether a request was intentionally provided by the user who sent the request, which could have originated from an unauthorized actor.",
+  "extended_description": "",
+  "modes_of_introduction": [],
+  "common_consequences": [
+    {
+      "scope": "Gain Privileges or Assume Identity; Bypass Protection Mechanism; Read Application Data; Modify Application Data; DoS: Crash, Exit, or Restart",
+      "impact": "Scope: Confidentiality, Integrity, Availability, Non-Repudiation, Access ControlThe consequences will vary depending on the nature of the functionality that is vulnerable to CSRF. An attacker could trick a client into making an unintentional request to the web server via a URL, image load, XMLHttpRequest, etc., which would then be treated as an authentic request from the client - effectively performing any operations as the victim, leading to an exposure of data, unintended code execution, etc. If the victim is an administrator or privileged user, the consequences may include obtaining complete control over the web application - deleting or stealing data, uninstalling the product, or using it to launch other attacks against all of the product's users. Because the attacker has the identity of the victim, the scope of CSRF is limited only by the victim's privileges."
+    }
+  ],
+  "potential_mitigations": [
+    {
+      "phase": "Architecture and Design",
+      "strategy": "Strategy:Libraries or FrameworksUse a vetted library or framework that does not allow this weakness to occur or provides constructs that make this weakness easier to avoid [REF-1482].For example, use anti-CSRF packages such as the OWASP CSRFGuard. [REF-330]Another example is the ESAPI Session Management control, which includes a component for CSRF. [REF-45]",
+      "description": ""
+    },
+    {
+      "phase": "Implementation",
+      "strategy": "Ensure that the application is free of cross-site scripting issues (CWE-79), because most CSRF defenses can be bypassed using attacker-controlled script.",
+      "description": ""
+    },
+    {
+      "phase": "Architecture and Design",
+      "strategy": "Generate a unique nonce for each form, place the nonce into the form, and verify the nonce upon receipt of the form. Be sure that the nonce is not predictable (CWE-330). [REF-332]Note:Note that this can be bypassed using XSS (CWE-79).",
+      "description": ""
+    },
+    {
+      "phase": "Architecture and Design",
+      "strategy": "Identify especially dangerous operations. When the user performs a dangerous operation, send a separate confirmation request to ensure that the user intended to perform that operation.Note:Note that this can be bypassed using XSS (CWE-79).",
+      "description": ""
+    },
+    {
+      "phase": "Architecture and Design",
+      "strategy": "Use the \"double-submitted cookie\" method as described by Felten and Zeller:When a user visits a site, the site should generate a pseudorandom value and set it as a cookie on the user's machine. The site should require every form submission to include this value as a form value and also as a cookie value. When a POST request is sent to the site, the request should only be considered valid if the form value and the cookie value are the same.Because of the same-origin policy, an attacker cannot read or modify the value stored in the cookie. To successfully submit a form on behalf of the user, the attacker would have to correctly guess the pseudorandom value. If the pseudorandom value is cryptographically strong, this will be prohibitively difficult.This technique requires Javascript, so it may not work for browsers that have Javascript disabled. [REF-331]Note:Note that this can probably be bypassed using XSS (CWE-79), or when using web technologies that enable the attacker to read raw headers from HTTP requests.",
+      "description": ""
+    },
+    {
+      "phase": "Architecture and Design",
+      "strategy": "Do not use the GET method for any request that triggers a state change.",
+      "description": ""
+    },
+    {
+      "phase": "Implementation",
+      "strategy": "Check the HTTP Referer header to see if the request originated from an expected page. This could break legitimate functionality, because users or proxies may have disabled sending the Referer for privacy reasons.Note:Note that this can be bypassed using XSS (CWE-79). An attacker could use XSS to generate a spoofed Referer, or to generate a malicious request from a page whose Referer would be allowed.",
+      "description": ""
+    }
+  ],
+  "detection_methods": [
+    {
+      "method": "Manual Analysis",
+      "description": "This weakness can be detected using tools and techniques that require manual (human) analysis, such as penetration testing, threat modeling, and interactive tools that allow the tester to record and modify an active session.Specifically, manual analysis can be useful for finding this weakness, and for minimizing false positives assuming an understanding of business logic. However, it might not achieve desired code coverage within limited time constraints. For black-box analysis, if credentials are not known for privileged accounts, then the most security-critical portions of the application may not receive sufficient attention.Consider using OWASP CSRFTester to identify potential issues and aid in manual analysis.Effectiveness: HighNote:These may be more effective than strictly automated techniques. This is especially the case with weaknesses that are related to design and business rules."
+    },
+    {
+      "method": "Automated Static Analysis",
+      "description": "CSRF is currently difficult to detect reliably using automated techniques. This is because each application has its own implicit security policy that dictates which requests can be influenced by an outsider and automatically performed on behalf of a user, versus which requests require strong confidence that the user intends to make the request. For example, a keyword search of the public portion of a web site is typically expected to be encoded within a link that can be launched automatically when the user clicks on the link.Effectiveness: Limited"
+    },
+    {
+      "method": "Automated Static Analysis - Binary or Bytecode",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Bytecode Weakness Analysis - including disassembler + source code weakness analysisBinary Weakness Analysis - including disassembler + source code weakness analysisEffectiveness: SOAR Partial"
+    },
+    {
+      "method": "Manual Static Analysis - Binary or Bytecode",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Binary / Bytecode disassembler - then use manual analysis for vulnerabilities & anomaliesEffectiveness: SOAR Partial"
+    },
+    {
+      "method": "Dynamic Analysis with Automated Results Interpretation",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Highly cost effective:Web Application ScannerEffectiveness: High"
+    },
+    {
+      "method": "Dynamic Analysis with Manual Results Interpretation",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Highly cost effective:Fuzz TesterFramework-based FuzzerEffectiveness: High"
+    },
+    {
+      "method": "Manual Static Analysis - Source Code",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Focused Manual Spotcheck - Focused manual analysis of sourceManual Source Code Review (not inspections)Effectiveness: SOAR Partial"
+    },
+    {
+      "method": "Automated Static Analysis - Source Code",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Source code Weakness AnalyzerContext-configured Source Code Weakness AnalyzerEffectiveness: SOAR Partial"
+    },
+    {
+      "method": "Architecture or Design Review",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Inspection (IEEE 1028 standard) (can apply to requirements, design, source code, etc.)Formal Methods / Correct-By-ConstructionEffectiveness: SOAR Partial"
+    }
+  ],
+  "code_examples": [],
+  "related_cwes": [],
+  "related_attack_patterns": [
+    "CAPEC-111",
+    "CAPEC-462",
+    "CAPEC-467",
+    "CAPEC-62"
+  ],
+  "applicable_platforms": [
+    "Languages",
+    "Class: Not Language-Specific(Undetermined Prevalence)",
+    "Technologies",
+    "Class: Web Based(Undetermined Prevalence)Web Server(Undetermined Prevalence)"
+  ],
+  "likelihood_of_exploit": "Medium",
+  "url": "https://cwe.mitre.org/data/definitions/352.html",
+  "fetched_at": "2026-01-06 19:37:52"
+}

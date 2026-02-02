@@ -1,0 +1,110 @@
+{
+  "cwe_id": "CWE-327",
+  "name": "Use of a Broken or Risky Cryptographic Algorithm",
+  "description": "The product uses a broken or risky cryptographic algorithm or protocol.",
+  "extended_description": "Cryptographic algorithms are the methods by which data is scrambled to prevent observation or influence by unauthorized actors. Insecure cryptography can be exploited to expose sensitive information, modify data in unexpected ways, spoof identities of other users or devices, or other impacts.It is very difficult to produce a secure algorithm, and even high-profile algorithms by accomplished cryptographic experts have been broken. Well-known techniques exist to break or weaken various kinds of cryptography. Accordingly, there are a small number of well-understood and heavily studied algorithms that should be used by most products. Using a non-standard or known-insecure algorithm is dangerous because a determined adversary may be able to break the algorithm and compromise whatever data has been protected.Since the state of cryptography advances so rapidly, it is common for an algorithm to be considered \"unsafe\" even if it was once thought to be strong. This can happen when new attacks are discovered, or if computing power increases so much that the cryptographic algorithm no longer provides the amount of protection that was originally thought.For a number of reasons, this weakness is even more challenging to manage with hardware deployment of cryptographic algorithms as opposed to software implementation. First, if a flaw is discovered with hardware-implemented cryptography, the flaw cannot be fixed in most cases without a recall of the product, because hardware is not easily replaceable like software. Second, because the hardware product is expected to work for years, the adversary's computing power will only increase over time.",
+  "modes_of_introduction": [],
+  "common_consequences": [
+    {
+      "scope": "Read Application Data",
+      "impact": "Scope: ConfidentialityThe confidentiality of sensitive data may be compromised by the use of a broken or risky cryptographic algorithm."
+    },
+    {
+      "scope": "Modify Application Data",
+      "impact": "Scope: IntegrityThe integrity of sensitive data may be compromised by the use of a broken or risky cryptographic algorithm."
+    },
+    {
+      "scope": "Hide Activities",
+      "impact": "Scope: Accountability, Non-RepudiationIf the cryptographic algorithm is used to ensure the identity of the source of the data (such as digital signatures), then a broken algorithm will compromise this scheme and the source of the data cannot be proven."
+    }
+  ],
+  "potential_mitigations": [
+    {
+      "phase": "Architecture and Design",
+      "strategy": "Strategy:Libraries or FrameworksWhen there is a need to store or transmit sensitive data, use strong, up-to-date cryptographic algorithms to encrypt that data. Select a well-vetted algorithm that is currently considered to be strong by experts in the field, and use well-tested implementations. As with all cryptographic mechanisms, the source code should be available for analysis.For example, US government systems require FIPS 140-2 certification [REF-1192].Do not develop custom or private cryptographic algorithms. They will likely be exposed to attacks that are well-understood by cryptographers. Reverse engineering techniques are mature. If the algorithm can be compromised if attackers find out how it works, then it is especially weak.Periodically ensure that the cryptography has not become obsolete. Some older algorithms, once thought to require a billion years of computing time, can now be broken in days or hours. This includes MD4, MD5, SHA1, DES, and other algorithms that were once regarded as strong. [REF-267]",
+      "description": ""
+    },
+    {
+      "phase": "Architecture and Design",
+      "strategy": "Ensure that the design allows one cryptographic algorithm to be replaced with another in the next generation or version. Where possible, use wrappers to make the interfaces uniform. This will make it easier to upgrade to stronger algorithms. With hardware, design the product at the Intellectual Property (IP) level so that one cryptographic algorithm can be replaced with another in the next generation of the hardware product.Effectiveness: Defense in Depth",
+      "description": ""
+    },
+    {
+      "phase": "Architecture and Design",
+      "strategy": "Carefully manage and protect cryptographic keys (seeCWE-320). If the keys can be guessed or stolen, then the strength of the cryptography itself is irrelevant.",
+      "description": ""
+    },
+    {
+      "phase": "Architecture and Design",
+      "strategy": "Strategy:Libraries or FrameworksUse a vetted library or framework that does not allow this weakness to occur or provides constructs that make this weakness easier to avoid [REF-1482].Industry-standard implementations will save development time and may be more likely to avoid errors that can occur during implementation of cryptographic algorithms. Consider the ESAPI Encryption feature.",
+      "description": ""
+    },
+    {
+      "phase": "Implementation; Architecture and Design",
+      "strategy": "When using industry-approved techniques, use them correctly. Don't cut corners by skipping resource-intensive steps (CWE-325). These steps are often essential for preventing common attacks.",
+      "description": ""
+    }
+  ],
+  "detection_methods": [
+    {
+      "method": "Automated Analysis",
+      "description": "Automated methods may be useful for recognizing commonly-used libraries or features that have become obsolete.Effectiveness: ModerateNote:False negatives may occur if the tool is not aware of the cryptographic libraries in use, or if custom cryptography is being used."
+    },
+    {
+      "method": "Manual Analysis",
+      "description": "This weakness can be detected using tools and techniques that require manual (human) analysis, such as penetration testing, threat modeling, and interactive tools that allow the tester to record and modify an active session.Note:These may be more effective than strictly automated techniques. This is especially the case with weaknesses that are related to design and business rules."
+    },
+    {
+      "method": "Automated Static Analysis - Binary or Bytecode",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Bytecode Weakness Analysis - including disassembler + source code weakness analysisBinary Weakness Analysis - including disassembler + source code weakness analysisBinary / Bytecode simple extractor - strings, ELF readers, etc.Effectiveness: SOAR Partial"
+    },
+    {
+      "method": "Manual Static Analysis - Binary or Bytecode",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Binary / Bytecode disassembler - then use manual analysis for vulnerabilities & anomaliesEffectiveness: SOAR Partial"
+    },
+    {
+      "method": "Dynamic Analysis with Automated Results Interpretation",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Web Application ScannerWeb Services ScannerDatabase ScannersEffectiveness: SOAR Partial"
+    },
+    {
+      "method": "Dynamic Analysis with Manual Results Interpretation",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Highly cost effective:Man-in-the-middle attack toolCost effective for partial coverage:Framework-based FuzzerAutomated Monitored ExecutionMonitored Virtual Environment - run potentially malicious code in sandbox / wrapper / virtual machine, see if it does anything suspiciousEffectiveness: High"
+    },
+    {
+      "method": "Manual Static Analysis - Source Code",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Highly cost effective:Manual Source Code Review (not inspections)Cost effective for partial coverage:Focused Manual Spotcheck - Focused manual analysis of sourceEffectiveness: High"
+    },
+    {
+      "method": "Automated Static Analysis - Source Code",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Highly cost effective:Source code Weakness AnalyzerContext-configured Source Code Weakness AnalyzerEffectiveness: High"
+    },
+    {
+      "method": "Automated Static Analysis",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Configuration CheckerEffectiveness: SOAR Partial"
+    },
+    {
+      "method": "Architecture or Design Review",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Highly cost effective:Formal Methods / Correct-By-ConstructionCost effective for partial coverage:Inspection (IEEE 1028 standard) (can apply to requirements, design, source code, etc.)Effectiveness: High"
+    }
+  ],
+  "code_examples": [],
+  "related_cwes": [],
+  "related_attack_patterns": [
+    "CAPEC-20",
+    "CAPEC-459",
+    "CAPEC-473",
+    "CAPEC-475",
+    "CAPEC-608",
+    "CAPEC-614",
+    "CAPEC-97"
+  ],
+  "applicable_platforms": [
+    "Languages",
+    "Class: Not Language-Specific(Undetermined Prevalence)Verilog(Undetermined Prevalence)VHDL(Undetermined Prevalence)",
+    "Technologies",
+    "Class: Not Technology-Specific(Undetermined Prevalence)Class: ICS/OT(Undetermined Prevalence)"
+  ],
+  "likelihood_of_exploit": "High",
+  "url": "https://cwe.mitre.org/data/definitions/327.html",
+  "fetched_at": "2026-01-06 19:37:52"
+}

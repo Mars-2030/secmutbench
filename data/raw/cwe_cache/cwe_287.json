@@ -1,0 +1,83 @@
+{
+  "cwe_id": "CWE-287",
+  "name": "Improper Authentication",
+  "description": "When an actor claims to have a given identity, the product does not prove or insufficiently proves that the claim is correct.",
+  "extended_description": "",
+  "modes_of_introduction": [],
+  "common_consequences": [
+    {
+      "scope": "Read Application Data; Gain Privileges or Assume Identity; Execute Unauthorized Code or Commands",
+      "impact": "Scope: Integrity, Confidentiality, Availability, Access ControlThis weakness can lead to the exposure of resources or functionality to unintended actors, possibly providing attackers with sensitive information or even execute arbitrary code."
+    }
+  ],
+  "potential_mitigations": [
+    {
+      "phase": "Architecture and Design",
+      "strategy": "Strategy:Libraries or FrameworksUse an authentication framework or library such as the OWASP ESAPI Authentication feature.",
+      "description": ""
+    }
+  ],
+  "detection_methods": [
+    {
+      "method": "Automated Static Analysis",
+      "description": "Automated static analysis is useful for detecting certain types of authentication. A tool may be able to analyze related configuration files, such as .htaccess in Apache web servers, or detect the usage of commonly-used authentication libraries.Generally, automated static analysis tools have difficulty detecting custom authentication schemes. In addition, the software's design may include some functionality that is accessible to any user and does not require an established identity; an automated technique that detects the absence of authentication may report false positives.Effectiveness: Limited"
+    },
+    {
+      "method": "Manual Static Analysis",
+      "description": "This weakness can be detected using tools and techniques that require manual (human) analysis, such as penetration testing, threat modeling, and interactive tools that allow the tester to record and modify an active session.Manual static analysis is useful for evaluating the correctness of custom authentication mechanisms.Effectiveness: HighNote:These may be more effective than strictly automated techniques. This is especially the case with weaknesses that are related to design and business rules."
+    },
+    {
+      "method": "Manual Static Analysis - Binary or Bytecode",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Binary / Bytecode disassembler - then use manual analysis for vulnerabilities & anomaliesEffectiveness: SOAR Partial"
+    },
+    {
+      "method": "Dynamic Analysis with Automated Results Interpretation",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Web Application ScannerWeb Services ScannerDatabase ScannersEffectiveness: SOAR Partial"
+    },
+    {
+      "method": "Dynamic Analysis with Manual Results Interpretation",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Fuzz TesterFramework-based FuzzerEffectiveness: SOAR Partial"
+    },
+    {
+      "method": "Manual Static Analysis - Source Code",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Manual Source Code Review (not inspections)Effectiveness: SOAR Partial"
+    },
+    {
+      "method": "Automated Static Analysis - Source Code",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Source code Weakness AnalyzerContext-configured Source Code Weakness AnalyzerEffectiveness: SOAR Partial"
+    },
+    {
+      "method": "Automated Static Analysis",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Configuration CheckerEffectiveness: SOAR Partial"
+    },
+    {
+      "method": "Architecture or Design Review",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Highly cost effective:Inspection (IEEE 1028 standard) (can apply to requirements, design, source code, etc.)Formal Methods / Correct-By-ConstructionEffectiveness: High"
+    }
+  ],
+  "code_examples": [],
+  "related_cwes": [],
+  "related_attack_patterns": [
+    "CAPEC-114",
+    "CAPEC-115",
+    "CAPEC-151",
+    "CAPEC-194",
+    "CAPEC-22",
+    "CAPEC-57",
+    "CAPEC-593",
+    "CAPEC-633",
+    "CAPEC-650",
+    "CAPEC-94"
+  ],
+  "applicable_platforms": [
+    "Languages",
+    "Class: Not Language-Specific(Undetermined Prevalence)",
+    "Operating Systems",
+    "Class: Not OS-Specific(Undetermined Prevalence)TechnologiesClass: Not Technology-Specific(Undetermined Prevalence)Class: Web Based(Undetermined Prevalence)Class: ICS/OT(Often Prevalent)",
+    "Technologies",
+    "Class: Not Technology-Specific(Undetermined Prevalence)Class: Web Based(Undetermined Prevalence)Class: ICS/OT(Often Prevalent)"
+  ],
+  "likelihood_of_exploit": "High",
+  "url": "https://cwe.mitre.org/data/definitions/287.html",
+  "fetched_at": "2026-01-06 19:37:49"
+}

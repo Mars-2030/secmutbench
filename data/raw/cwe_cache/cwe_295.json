@@ -1,0 +1,70 @@
+{
+  "cwe_id": "CWE-295",
+  "name": "Improper Certificate Validation",
+  "description": "The product does not validate, or incorrectly validates, a certificate.",
+  "extended_description": "",
+  "modes_of_introduction": [],
+  "common_consequences": [
+    {
+      "scope": "Bypass Protection Mechanism; Gain Privileges or Assume Identity",
+      "impact": "Scope: Integrity, AuthenticationWhen a certificate is invalid or malicious, it might allow an attacker to spoof a trusted entity by interfering in the communication path between the host and client. The product might connect to a malicious host while believing it is a trusted host, or the product might be deceived into accepting spoofed data that appears to originate from a trusted host."
+    }
+  ],
+  "potential_mitigations": [
+    {
+      "phase": "Architecture and Design; Implementation",
+      "strategy": "Certificates should be carefully managed and checked to assure that data are encrypted with the intended owner's public key.",
+      "description": ""
+    },
+    {
+      "phase": "Implementation",
+      "strategy": "If certificate pinning is being used, ensure that all relevant properties of the certificate are fully validated before the certificate is pinned, including the hostname.",
+      "description": ""
+    }
+  ],
+  "detection_methods": [
+    {
+      "method": "Automated Static Analysis - Binary or Bytecode",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Bytecode Weakness Analysis - including disassembler + source code weakness analysisBinary Weakness Analysis - including disassembler + source code weakness analysisEffectiveness: SOAR Partial"
+    },
+    {
+      "method": "Manual Static Analysis - Binary or Bytecode",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Binary / Bytecode disassembler - then use manual analysis for vulnerabilities & anomaliesEffectiveness: SOAR Partial"
+    },
+    {
+      "method": "Dynamic Analysis with Automated Results Interpretation",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Web Application ScannerEffectiveness: SOAR Partial"
+    },
+    {
+      "method": "Dynamic Analysis with Manual Results Interpretation",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Highly cost effective:Man-in-the-middle attack toolEffectiveness: High"
+    },
+    {
+      "method": "Manual Static Analysis - Source Code",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Highly cost effective:Focused Manual Spotcheck - Focused manual analysis of sourceManual Source Code Review (not inspections)Effectiveness: High"
+    },
+    {
+      "method": "Automated Static Analysis - Source Code",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Cost effective for partial coverage:Source code Weakness AnalyzerContext-configured Source Code Weakness AnalyzerEffectiveness: SOAR Partial"
+    },
+    {
+      "method": "Architecture or Design Review",
+      "description": "According to SOAR [REF-1479], the following detection techniques may be useful:Highly cost effective:Inspection (IEEE 1028 standard) (can apply to requirements, design, source code, etc.)Effectiveness: High"
+    }
+  ],
+  "code_examples": [],
+  "related_cwes": [],
+  "related_attack_patterns": [
+    "CAPEC-459",
+    "CAPEC-475"
+  ],
+  "applicable_platforms": [
+    "Languages",
+    "Class: Not Language-Specific(Undetermined Prevalence)",
+    "Technologies",
+    "Class: Not Technology-Specific(Undetermined Prevalence)Class: Web Based(Undetermined Prevalence)Class: Mobile(Undetermined Prevalence)"
+  ],
+  "likelihood_of_exploit": "Unknown",
+  "url": "https://cwe.mitre.org/data/definitions/295.html",
+  "fetched_at": "2026-01-06 19:37:59"
+}

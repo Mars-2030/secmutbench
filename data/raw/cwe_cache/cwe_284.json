@@ -1,0 +1,56 @@
+{
+  "cwe_id": "CWE-284",
+  "name": "Improper Access Control",
+  "description": "The product does not restrict or incorrectly restricts access to a resource from an unauthorized actor.",
+  "extended_description": "Access control involves the use of several protection mechanisms such as:Authentication (proving the identity of an actor)Authorization (ensuring that a given actor can access a resource), andAccountability (tracking of activities that were performed)When any mechanism is not applied or otherwise fails, attackers can compromise the security of the product by gaining privileges, reading sensitive information, executing commands, evading detection, etc.There are two distinct behaviors that can introduce access control weaknesses:Specification: incorrect privileges, permissions, ownership, etc. are explicitly specified for either the user or the resource (for example, setting a password file to be world-writable, or giving administrator capabilities to a guest user). This action could be performed by the program or the administrator.Enforcement: the mechanism contains errors that prevent it from properly enforcing the specified access control requirements (e.g., allowing the user to specify their own privileges, or allowing a syntactically-incorrect ACL to produce insecure settings). This problem occurs within the program itself, in that it does not actually enforce the intended security policy that the administrator specifies.",
+  "modes_of_introduction": [],
+  "common_consequences": [
+    {
+      "scope": "Varies by Context",
+      "impact": "Scope: Other"
+    }
+  ],
+  "potential_mitigations": [
+    {
+      "phase": "Architecture and Design; Operation",
+      "strategy": "Very carefully manage the setting, management, and handling of privileges. Explicitly manage trust zones in the software.",
+      "description": ""
+    },
+    {
+      "phase": "Architecture and Design",
+      "strategy": "Strategy:Separation of PrivilegeCompartmentalize the system to have \"safe\" areas where trust boundaries can be unambiguously drawn. Do not allow sensitive data to go outside of the trust boundary and always be careful when interfacing with a compartment outside of the safe area.Ensure that appropriate compartmentalization is built into the system design, and the compartmentalization allows for and reinforces privilege separation functionality. Architects and designers should rely on the principle of least privilege to decide the appropriate time to use privileges and the time to drop privileges.",
+      "description": ""
+    }
+  ],
+  "detection_methods": [],
+  "code_examples": [],
+  "related_cwes": [],
+  "related_attack_patterns": [
+    "CAPEC-19",
+    "CAPEC-441",
+    "CAPEC-478",
+    "CAPEC-479",
+    "CAPEC-502",
+    "CAPEC-503",
+    "CAPEC-536",
+    "CAPEC-546",
+    "CAPEC-550",
+    "CAPEC-551",
+    "CAPEC-552",
+    "CAPEC-556",
+    "CAPEC-558",
+    "CAPEC-562",
+    "CAPEC-563",
+    "CAPEC-564",
+    "CAPEC-578"
+  ],
+  "applicable_platforms": [
+    "Languages",
+    "Class: Not Language-Specific(Often Prevalent)",
+    "Technologies",
+    "Class: Not Technology-Specific(Often Prevalent)Class: ICS/OT(Often Prevalent)Class: Web Based(Often Prevalent)"
+  ],
+  "likelihood_of_exploit": "Unknown",
+  "url": "https://cwe.mitre.org/data/definitions/284.html",
+  "fetched_at": "2026-01-06 19:37:56"
+}
