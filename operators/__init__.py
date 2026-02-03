@@ -24,6 +24,7 @@ from .security_operators import (
     SSTI,
     CORS_WEAK,
     CSRF_REMOVE,
+    WEAKRANDOM,
 )
 
 from .operator_registry import (
@@ -51,6 +52,7 @@ __all__ = [
     'SSTI',
     'CORS_WEAK',
     'CSRF_REMOVE',
+    'WEAKRANDOM',
     'OPERATORS',
     'get_applicable_operators',
     'get_operators_for_cwe',

@@ -145,11 +145,18 @@ def calculate_metrics(
     total_mutants = 0
     total_killed = 0
 
+    valid_mutation_scores = 0
+    total_samples_with_scores = 0
+
     for result in sample_results:
         metrics = result.get("metrics", {})
 
+        # Only include valid mutation scores (not None)
         if "mutation_score" in metrics:
-            mutation_scores.append(metrics["mutation_score"])
+            total_samples_with_scores += 1
+            if metrics["mutation_score"] is not None:
+                mutation_scores.append(metrics["mutation_score"])
+                valid_mutation_scores += 1
 
         if "vuln_detected" in metrics:
             vuln_detections.append(1 if metrics["vuln_detected"] else 0)
@@ -170,6 +177,8 @@ def calculate_metrics(
 
     return {
         "samples": len(sample_results),
+        "valid_mutation_scores": valid_mutation_scores,  # Samples with non-None mutation score
+        "samples_with_scores": total_samples_with_scores,  # Total samples that attempted mutation
         "avg_mutation_score": statistics.mean(mutation_scores) if mutation_scores else 0.0,
         "std_mutation_score": statistics.stdev(mutation_scores) if len(mutation_scores) > 1 else 0.0,
         "avg_vuln_detection": statistics.mean(vuln_detections) if vuln_detections else 0.0,
@@ -205,6 +214,7 @@ def aggregate_by_cwe(
     for cwe, results in by_cwe.items():
         aggregated[cwe] = calculate_metrics(results)
         aggregated[cwe]["samples_count"] = len(results)
+        aggregated[cwe]["low_confidence"] = len(results) < 5
 
     return aggregated
 
@@ -365,6 +375,120 @@ def analyze_survival_patterns(
     }
 
 
+def calculate_kill_breakdown(
+    sample_results: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Calculate mutation score breakdown by kill type.
+
+    Kill types:
+    - semantic: AssertionError with security-related terms (validates security property)
+    - assertion_incidental: AssertionError without security terms (caught change incidentally)
+    - crash: ImportError, TypeError, etc. (code structure issue)
+    - other: Any other exception
+
+    Args:
+        sample_results: List of per-sample result dicts
+
+    Returns:
+        Dict containing:
+        - total_mutants: Total mutants generated
+        - total_killed: Total mutants killed (any reason)
+        - semantic_kills: Kills with security-aware assertions
+        - incidental_kills: Assertion kills without security terms
+        - crash_kills: Kills due to crashes
+        - other_kills: Other kills
+        - mutation_score: Overall mutation score
+        - security_mutation_score: Semantic kills / total mutants
+        - incidental_score: Incidental kills / total mutants
+        - crash_score: Crash kills / total mutants
+    """
+    total_mutants = 0
+    total_killed = 0
+    semantic_kills = 0
+    incidental_kills = 0
+    crash_kills = 0
+    other_kills = 0
+
+    for result in sample_results:
+        mutant_details = result.get("mutant_details", [])
+        for mutant in mutant_details:
+            total_mutants += 1
+            if mutant.get("killed", False):
+                total_killed += 1
+                kill_type = mutant.get("kill_type", "other")
+                if kill_type == "semantic":
+                    semantic_kills += 1
+                elif kill_type == "assertion_incidental":
+                    incidental_kills += 1
+                elif kill_type == "crash":
+                    crash_kills += 1
+                else:
+                    other_kills += 1
+
+    if total_mutants == 0:
+        return {
+            "total_mutants": 0,
+            "total_killed": 0,
+            "semantic_kills": 0,
+            "incidental_kills": 0,
+            "crash_kills": 0,
+            "other_kills": 0,
+            "mutation_score": None,
+            "security_mutation_score": None,
+            "incidental_score": None,
+            "crash_score": None,
+        }
+
+    return {
+        "total_mutants": total_mutants,
+        "total_killed": total_killed,
+        "semantic_kills": semantic_kills,
+        "incidental_kills": incidental_kills,
+        "crash_kills": crash_kills,
+        "other_kills": other_kills,
+        "mutation_score": total_killed / total_mutants,
+        "security_mutation_score": semantic_kills / total_mutants,
+        "incidental_score": incidental_kills / total_mutants,
+        "crash_score": crash_kills / total_mutants,
+    }
+
+
+def calculate_security_precision(
+    sample_results: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Calculate security precision: proportion of samples where tests both
+    pass on secure code AND detect the vulnerability.
+
+    Security Precision = VD / secure_passes
+
+    This metric answers: "Of the tests that actually work on secure code,
+    what fraction also catch the vulnerability?"
+
+    Args:
+        sample_results: List of per-sample result dicts
+
+    Returns:
+        Dict with secure_passes, vuln_detected_count, security_precision
+    """
+    secure_passes = 0
+    vuln_detected = 0
+
+    for result in sample_results:
+        metrics = result.get("metrics", {})
+        if metrics.get("secure_passes", False):
+            secure_passes += 1
+            if metrics.get("vuln_detected", False):
+                vuln_detected += 1
+
+    return {
+        "secure_passes": secure_passes,
+        "vuln_detected_count": vuln_detected,
+        "security_precision": vuln_detected / secure_passes if secure_passes > 0 else None,
+    }
+
+
 def format_metrics_report(
     metrics: Dict[str, Any],
     by_cwe: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -403,6 +527,27 @@ def format_metrics_report(
         "",
     ]
 
+    # Kill Breakdown (if available)
+    kb = metrics.get("kill_breakdown")
+    if kb and kb.get("total_mutants", 0) > 0:
+        lines.extend([
+            "Kill Breakdown:",
+            f"  Semantic (security):   {kb.get('semantic_kills', 0)}",
+            f"  Incidental:            {kb.get('incidental_kills', 0)}",
+            f"  Crash:                 {kb.get('crash_kills', 0)}",
+            f"  Other:                 {kb.get('other_kills', 0)}",
+            f"  Security Mut. Score:   {kb.get('security_mutation_score', 0):.2%}",
+            f"  Crash Score:           {kb.get('crash_score', 0):.2%}",
+            "",
+        ])
+
+    sp = metrics.get("security_precision")
+    if sp is not None:
+        lines.extend([
+            f"  Security Precision:    {sp:.2%}  (VD / secure_passes)",
+            "",
+        ])
+
     if by_cwe:
         lines.extend([
             "-" * 60,
@@ -410,11 +555,12 @@ def format_metrics_report(
             "",
         ])
         for cwe, cwe_metrics in sorted(by_cwe.items()):
+            confidence = "" if not cwe_metrics.get("low_confidence") else " [!low-n]"
             lines.append(
                 f"  {cwe}: "
                 f"Score={cwe_metrics.get('avg_mutation_score', 0):.2%}, "
                 f"Detection={cwe_metrics.get('avg_vuln_detection', 0):.2%}, "
-                f"Samples={cwe_metrics.get('samples_count', 0)}"
+                f"Samples={cwe_metrics.get('samples_count', 0)}{confidence}"
             )
         lines.append("")
 

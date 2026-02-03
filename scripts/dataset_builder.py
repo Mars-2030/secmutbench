@@ -95,6 +95,62 @@ DEFAULT_CWE_WEIGHTS = {
 
 
 # =============================================================================
+# Tautological Test Detection
+# =============================================================================
+
+# Patterns that indicate useless assertions (always pass, test nothing)
+TAUTOLOGICAL_PATTERNS = [
+    r'assert\s+True\b',                                    # assert True
+    r'assert\s+result\s+is\s+not\s+None\s+or\s+result\s+is\s+None',  # always true
+    r'assert\s+1\s*==\s*1',                                # assert 1 == 1
+    r'assert\s+["\'].*["\']\s*$',                          # assert "string" (truthy)
+    r"assert\s+['\"].*['\"]\s*$",                          # assert 'string'
+]
+
+
+def has_real_security_test(security_tests: str) -> bool:
+    """
+    Check if security tests have real assertions (not just tautological ones).
+
+    Tautological assertions like `assert True` always pass and don't actually
+    test any security property. Samples with only such assertions should be
+    dropped as they inflate mutation scores without detecting real vulnerabilities.
+
+    Args:
+        security_tests: The security test code string
+
+    Returns:
+        True if at least one non-tautological assertion exists, False otherwise
+    """
+    if not security_tests or not security_tests.strip():
+        return False
+
+    # Remove comments and docstrings to avoid false positives
+    code = re.sub(r'#.*$', '', security_tests, flags=re.MULTILINE)
+    code = re.sub(r'""".*?"""', '', code, flags=re.DOTALL)
+    code = re.sub(r"'''.*?'''", '', code, flags=re.DOTALL)
+
+    # Find all assert statements
+    # Match: assert <expression> (optionally followed by comma and message)
+    asserts = re.findall(r'assert\s+[^,\n]+', code)
+
+    if not asserts:
+        return False  # No assertions at all
+
+    # Check if ALL asserts are tautological
+    for assertion in asserts:
+        assertion_clean = assertion.strip()
+        is_tautological = any(
+            re.search(pat, assertion_clean, re.IGNORECASE)
+            for pat in TAUTOLOGICAL_PATTERNS
+        )
+        if not is_tautological:
+            return True  # Found at least one real assertion
+
+    return False  # All assertions are tautological
+
+
+# =============================================================================
 # Dataset Builder Class
 # =============================================================================
 
@@ -226,15 +282,36 @@ class DatasetBuilder:
         fixed = self._fix_samples(selected)
         print(f"  Fixed: {len(fixed)} samples")
 
-        # Step 7: Add quality metadata
+        # Step 7: Final validation (ensure operators fire, signatures match)
+        print("\nStep 7: Final validation (verify operators fire, signatures match)...")
+        validated, val_stats = self._final_validation(fixed)
+        print(f"  Before: {val_stats['before']} samples")
+        print(f"  After: {val_stats['after']} samples")
+        if val_stats['dropped']['no_operators_fire'] > 0:
+            print(f"  Dropped (no operators fire): {val_stats['dropped']['no_operators_fire']}")
+        if val_stats['dropped']['no_mutants_produced'] > 0:
+            print(f"  Dropped (no mutants produced): {val_stats['dropped']['no_mutants_produced']}")
+        if val_stats['dropped']['trivial_diff'] > 0:
+            print(f"  Dropped (trivial diff): {val_stats['dropped']['trivial_diff']}")
+        if val_stats['dropped']['empty_code'] > 0:
+            print(f"  Dropped (empty code): {val_stats['dropped']['empty_code']}")
+        if val_stats['dropped']['signature_mismatch'] > 0:
+            print(f"  Dropped (signature mismatch): {val_stats['dropped']['signature_mismatch']}")
+        if val_stats['dropped']['insecure_secure_code'] > 0:
+            print(f"  Dropped (insecure secure_code): {val_stats['dropped']['insecure_secure_code']}")
+        if val_stats['dropped']['tautological_security_test'] > 0:
+            print(f"  Dropped (tautological security test): {val_stats['dropped']['tautological_security_test']}")
+        fixed = validated
+
+        # Step 8: Add quality metadata
         if QUALITY_MANAGER_AVAILABLE:
-            print("\nStep 7: Adding quality metadata...")
+            print("\nStep 8: Adding quality metadata...")
             fixed = self._add_quality_metadata(fixed)
             print(f"  Quality metadata added to {len(fixed)} samples")
         else:
-            print("\nStep 7: Skipping quality metadata (module not available)")
+            print("\nStep 8: Skipping quality metadata (module not available)")
 
-        # Step 8: Final stats
+        # Step 9: Final stats
         self._print_stats(fixed)
 
         return fixed
@@ -415,7 +492,7 @@ class DatasetBuilder:
 
             # Fix 2: Regenerate empty/placeholder security tests
             if not sec_tests or "# Placeholder" in sec_tests or len(sec_tests.strip()) < 50:
-                sec_tests = self._generate_cwe_security_test(sample.entry_point, sample.cwe)
+                sec_tests = self._generate_cwe_security_test(sample.entry_point, sample.cwe, sample.secure_code)
                 fixes_applied["tests_regenerated"] += 1
 
             # Fix 3: Ensure proper difficulty
@@ -473,12 +550,191 @@ class DatasetBuilder:
 
         return "\n".join(lines + assertions)
 
-    def _generate_cwe_security_test(self, entry_point: str, cwe: str) -> str:
+    def _generate_cwe_security_test(self, entry_point: str, cwe: str, code: str = "") -> str:
         """Generate CWE-specific security test (delegates to sample_generator)."""
         from sample_generator import generate_security_test
         # Get base CWE (without _hard suffix)
         cwe_base = cwe.split("_")[0] if "_" in cwe else cwe
-        return generate_security_test(entry_point, cwe_base)
+        return generate_security_test(entry_point, cwe_base, code)
+
+    def _final_validation(self, samples: List[Sample]) -> Tuple[List[Sample], Dict]:
+        """
+        Final validation pass to remove samples that can't produce meaningful results.
+
+        This is the last filter before saving, ensuring:
+        1. At least one assigned operator actually fires on the code
+        2. Secure code differs meaningfully from insecure code
+        3. Function signature matches test calls (no TypeError at runtime)
+
+        Args:
+            samples: List of samples to validate
+
+        Returns:
+            Tuple of (valid_samples, stats_dict)
+        """
+        import ast
+
+        # Try to import OPERATORS for validation
+        try:
+            from operators.operator_registry import OPERATORS
+            operators_available = True
+        except ImportError:
+            operators_available = False
+            OPERATORS = {}
+
+        valid = []
+        dropped = {
+            "no_operators_fire": 0,
+            "no_mutants_produced": 0,
+            "trivial_diff": 0,
+            "empty_code": 0,
+            "signature_mismatch": 0,
+            "insecure_secure_code": 0,
+            "tautological_security_test": 0
+        }
+        dropped_details = []
+
+        # Patterns that indicate insecure code - these should NOT appear in secure_code
+        INSECURE_PATTERNS = {
+            'CWE-89': [
+                r'\.execute\s*\([^)]*%[sd].*%',  # String formatting in SQL
+                r'\.execute\s*\([^)]*\.format\(',  # .format() in SQL
+                r'f["\'].*\{.*\}.*(?:SELECT|INSERT|UPDATE|DELETE)',  # f-string SQL
+            ],
+            'CWE-78': [
+                r'\bos\.popen\s*\(',  # os.popen is inherently unsafe
+                r'\bos\.system\s*\(',  # os.system is inherently unsafe
+                r'shell\s*=\s*True',  # shell=True without proper sanitization
+            ],
+        }
+
+        def operators_produce_mutants(code: str, operator_names: List[str]) -> Tuple[bool, List[str]]:
+            """Check if operators actually produce mutants (not just applies_to)."""
+            working_ops = []
+            for op_name in operator_names:
+                if op_name in OPERATORS:
+                    op = OPERATORS[op_name]
+                    if op.applies_to(code):
+                        mutants = op.mutate(code)
+                        if mutants:
+                            working_ops.append(op_name)
+            return len(working_ops) > 0, working_ops
+
+        def get_function_param_count(code: str, func_name: str) -> Optional[int]:
+            """Get the number of parameters for a function definition."""
+            try:
+                tree = ast.parse(code)
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.FunctionDef) and node.name == func_name:
+                        # Count args excluding 'self' for methods
+                        args = node.args.args
+                        param_count = len(args)
+                        # Exclude 'self' if present (method)
+                        if args and args[0].arg == 'self':
+                            param_count -= 1
+                        return param_count
+                return None
+            except SyntaxError:
+                return None
+
+        def test_passes_arguments(test_code: str, func_name: str) -> bool:
+            """Check if test code passes arguments to the function."""
+            # Look for patterns like: func_name("...) or func_name(var)
+            # But not func_name() with no arguments
+            pattern = rf'\b{re.escape(func_name)}\s*\(\s*["\'\w]'
+            return bool(re.search(pattern, test_code))
+
+        for sample in samples:
+            # Check 1: Non-empty code
+            if not sample.secure_code.strip() or not sample.insecure_code.strip():
+                dropped["empty_code"] += 1
+                dropped_details.append((sample.id, "empty_code"))
+                continue
+
+            # Check 2: At least one operator actually produces mutants (not just applies_to)
+            if operators_available:
+                assigned_ops = sample.mutation_operators or []
+                has_mutants, working_ops = operators_produce_mutants(sample.secure_code, assigned_ops)
+
+                if not has_mutants:
+                    # Try fallback: any operator that produces mutants
+                    all_op_names = list(OPERATORS.keys())
+                    has_mutants, working_ops = operators_produce_mutants(sample.secure_code, all_op_names)
+
+                    if has_mutants:
+                        # Update sample's operators to ones that actually produce mutants
+                        sample = Sample(
+                            id=sample.id,
+                            cwe=sample.cwe,
+                            cwe_name=sample.cwe_name,
+                            difficulty=sample.difficulty,
+                            prompt=sample.prompt,
+                            entry_point=sample.entry_point,
+                            insecure_code=sample.insecure_code,
+                            secure_code=sample.secure_code,
+                            functional_tests=sample.functional_tests,
+                            security_tests=sample.security_tests,
+                            mutation_operators=working_ops[:3],  # Limit to top 3
+                            source=sample.source,
+                            original_id=sample.original_id
+                        )
+                    else:
+                        dropped["no_mutants_produced"] += 1
+                        dropped_details.append((sample.id, f"no_mutants_produced (assigned: {assigned_ops})"))
+                        continue
+
+            # Check 3: Meaningful difference between secure and insecure
+            normalized_secure = re.sub(r'\s+', '', sample.secure_code)
+            normalized_insecure = re.sub(r'\s+', '', sample.insecure_code)
+            if normalized_secure == normalized_insecure:
+                dropped["trivial_diff"] += 1
+                dropped_details.append((sample.id, "trivial_diff"))
+                continue
+
+            # Check 4: Function signature matches test calls
+            # If tests pass arguments but function takes none, it will crash with TypeError
+            if sample.entry_point:
+                param_count = get_function_param_count(sample.secure_code, sample.entry_point)
+                if param_count is not None and param_count == 0:
+                    # Function takes no parameters - check if tests try to pass arguments
+                    all_tests = (sample.functional_tests or "") + (sample.security_tests or "")
+                    if test_passes_arguments(all_tests, sample.entry_point):
+                        dropped["signature_mismatch"] += 1
+                        dropped_details.append((sample.id, f"signature_mismatch: {sample.entry_point}() takes 0 args but tests pass args"))
+                        continue
+
+            # Check 5: Detect insecure patterns in secure_code
+            # The secure_code should NOT contain patterns that are inherently insecure
+            if sample.cwe in INSECURE_PATTERNS:
+                is_insecure = False
+                matched_pattern = None
+                for pattern in INSECURE_PATTERNS[sample.cwe]:
+                    if re.search(pattern, sample.secure_code, re.IGNORECASE):
+                        is_insecure = True
+                        matched_pattern = pattern
+                        break
+                if is_insecure:
+                    dropped["insecure_secure_code"] += 1
+                    dropped_details.append((sample.id, f"insecure_secure_code: matched {matched_pattern}"))
+                    continue
+
+            # Check 6: Drop samples with tautological security tests
+            # Tests like `assert True` always pass and don't detect any vulnerabilities
+            if not has_real_security_test(sample.security_tests):
+                dropped["tautological_security_test"] += 1
+                dropped_details.append((sample.id, "tautological_security_test: only useless assertions"))
+                continue
+
+            valid.append(sample)
+
+        stats = {
+            "before": len(samples),
+            "after": len(valid),
+            "dropped": dropped,
+            "dropped_details": dropped_details[:10]  # First 10 for logging
+        }
+
+        return valid, stats
 
     def _add_quality_metadata(self, samples: List[Sample]) -> List[Sample]:
         """Add quality metadata to all samples."""

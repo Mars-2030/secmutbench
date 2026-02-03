@@ -178,7 +178,10 @@ SAFE_MODULES = {'re', 'json', 'html', 'base64', 'urllib', 'urllib.parse', 'hmac'
                 'secrets', 'ast', 'math', 'string', 'collections', 'itertools',
                 'functools', 'operator', 'copy', 'types', 'datetime', 'time', 'random',
                 'hashlib', 'typing', 'dataclasses', 'enum', 'abc', 'shlex', 'pathlib',
-                'xml', 'xml.etree', 'xml.etree.ElementTree', 'defusedxml', 'inspect'}
+                'xml', 'xml.etree', 'xml.etree.ElementTree', 'defusedxml', 'inspect',
+                'lxml', 'lxml.etree',  # For XXE tests
+                'Crypto', 'Crypto.Cipher', 'Crypto.Hash',  # For crypto tests (PyCryptodome)
+                }
 
 
 def create_safe_import(mock_modules: Dict[str, Any]):
@@ -291,6 +294,16 @@ def create_test_globals() -> Dict[str, Any]:
         "ast": __import__("ast"),
         # Test utilities
         "pytest": MockPytest,
+        # Common undefined names that samples may reference
+        "Flask": mock_flask.Flask if hasattr(mock_flask, 'Flask') else type('Flask', (), {}),
+        "flask": mock_flask,
+        "csrf_exempt": lambda f: f,  # Decorator that does nothing
+        "login_required": lambda f: f,  # Decorator that does nothing
+        "file_list": [],
+        "SCRIPT": "",
+        "sequence_files": [],
+        "bde_user": "test_user",
+        "MockRequest": type('MockRequest', (), {'user': type('User', (), {'is_authenticated': True, 'is_admin': False})()}),
     }
 
 

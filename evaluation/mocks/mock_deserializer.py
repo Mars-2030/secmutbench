@@ -27,6 +27,19 @@ class MockPickle:
             "Insecure: pickle used for untrusted data"
     """
 
+    # Exception classes that pickle provides
+    class UnpicklingError(Exception):
+        """Exception raised when unpickling fails."""
+        pass
+
+    class PicklingError(Exception):
+        """Exception raised when pickling fails."""
+        pass
+
+    class PickleError(Exception):
+        """Base exception for pickle errors."""
+        pass
+
     def __init__(self):
         self.reset()
 

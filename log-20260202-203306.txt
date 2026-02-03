@@ -1,0 +1,10 @@
+Loading benchmark...
+Loaded 141 samples
+Shuffled with seed=42
+
+Models to evaluate: ['qwen2.5-coder:7b']
+
+============================================================
+Evaluating: qwen2.5-coder:7b (ollama)
+============================================================
+  [1/141] 3b4d605d03ad... 

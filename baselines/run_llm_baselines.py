@@ -42,6 +42,59 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from evaluation.evaluate import evaluate_generated_tests, evaluate_reference_tests, load_benchmark
 from evaluation.llm_judge import create_evaluator, format_multimodal_report
 from evaluation.prompts import format_test_generation_prompt
+from evaluation.metrics import calculate_kill_breakdown
+from collections import defaultdict
+import random as random_module
+
+
+def stratified_sample(benchmark: List[Dict], max_samples: int, seed: int = 42) -> List[Dict]:
+    """
+    Sample proportionally from each CWE to ensure representative coverage.
+
+    Instead of taking the first N samples (which may cluster on one CWE),
+    this samples proportionally from each CWE category.
+
+    Args:
+        benchmark: Full list of samples
+        max_samples: Target number of samples
+        seed: Random seed for reproducibility
+
+    Returns:
+        List of samples with proportional CWE representation
+    """
+    rng = random_module.Random(seed)
+
+    # Group by CWE
+    by_cwe = defaultdict(list)
+    for s in benchmark:
+        by_cwe[s.get('cwe', 'unknown')].append(s)
+
+    total = len(benchmark)
+    selected = []
+
+    # First pass: proportional allocation
+    for cwe, cwe_samples in by_cwe.items():
+        # Proportional allocation with minimum of 1
+        n = max(1, round(len(cwe_samples) / total * max_samples))
+        rng.shuffle(cwe_samples)
+        selected.extend(cwe_samples[:n])
+
+    # If we have too many, trim randomly
+    if len(selected) > max_samples:
+        rng.shuffle(selected)
+        selected = selected[:max_samples]
+
+    # If we have too few, add more randomly from remaining
+    elif len(selected) < max_samples:
+        used_ids = {s['id'] for s in selected}
+        remaining = [s for s in benchmark if s['id'] not in used_ids]
+        rng.shuffle(remaining)
+        needed = max_samples - len(selected)
+        selected.extend(remaining[:needed])
+
+    # Final shuffle to mix CWEs
+    rng.shuffle(selected)
+    return selected
 
 
 # Load .env file
@@ -74,12 +127,16 @@ OLLAMA_MODELS = [
     "codestral:latest",           # E006 - Mistral code model
     "deepseek-coder-v2:latest",   # E007 - DeepSeek
     "deepseek-r1:14b",            # E008 - DeepSeek reasoning
+    "gpt-oss:120b",               # E009 - OpenAI OSS model
 ]
 
 API_MODELS = [
     {"name": "gpt-4o", "provider": "openai"},
     {"name": "gpt-5", "provider": "openai"},
+    {"name": "gpt-5-mini-2025-08-07", "provider": "openai"},
     {"name": "claude-sonnet-4-5-20250929", "provider": "anthropic"},
+    {"name": "gemini-3-flash-preview", "provider": "google"},
+    {"name": "gemini-2.5-pro", "provider": "google"},
 ]
 
 
@@ -96,9 +153,13 @@ class ModelResult:
     avg_mutation_score: float
     avg_vuln_detection: float
     avg_line_coverage: float
-    avg_security_relevance: float = 0.0
-    avg_test_quality: float = 0.0
-    avg_composite_score: float = 0.0
+    avg_security_relevance: Optional[float] = None
+    avg_test_quality: Optional[float] = None
+    avg_composite_score: Optional[float] = None
+    avg_security_mutation_score: Optional[float] = None
+    avg_incidental_score: Optional[float] = None
+    avg_crash_score: Optional[float] = None
+    avg_security_precision: Optional[float] = None
     evaluation_time: float = 0.0
     errors: int = 0
     detailed_results: List[Dict] = None
@@ -108,26 +169,40 @@ class ModelResult:
             self.detailed_results = []
 
 
-def call_ollama(model: str, prompt: str, timeout: int = 120) -> str:
-    """Call Ollama API to generate tests."""
+def call_ollama(model: str, prompt: str, timeout: int = 300) -> str:
+    """Call Ollama API to generate tests.
+
+    Args:
+        model: Ollama model name
+        prompt: The prompt to send
+        timeout: Request timeout in seconds (default 300 = 5 minutes)
+    """
     import requests
 
     try:
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": 0.2,
+                "num_predict": 2048,
+            }
+        }
+        if model.startswith("gpt-oss"):
+            payload["think"] = "high"
+            payload["options"]["num_predict"] = 8192
         response = requests.post(
             "http://localhost:11434/api/generate",
-            json={
-                "model": model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.2,
-                    "num_predict": 2048,
-                }
-            },
+            json=payload,
             timeout=timeout
         )
         response.raise_for_status()
-        return response.json().get("response", "")
+        result = response.json()
+        return result.get("response", "") or result.get("thinking", "")
+    except requests.exceptions.Timeout:
+        print(f"  Ollama timeout after {timeout}s - try increasing with --timeout")
+        return ""
     except Exception as e:
         print(f"  Ollama error: {e}")
         return ""
@@ -184,7 +259,31 @@ def call_anthropic(model: str, prompt: str) -> str:
         return ""
 
 
-def generate_tests(model: str, provider: str, sample: Dict) -> str:
+def call_google(model: str, prompt: str, max_retries: int = 3) -> str:
+    """Call Google Gemini API to generate tests."""
+    from google import genai
+    client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config={"temperature": 0.2, "max_output_tokens": 2048},
+            )
+            return response.text
+        except Exception as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                wait = 60
+                print(f"  Google rate limit hit, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...")
+                time.sleep(wait)
+            else:
+                print(f"  Google error: {e}")
+                return ""
+    print(f"  Google error: max retries ({max_retries}) exhausted")
+    return ""
+
+
+def generate_tests(model: str, provider: str, sample: Dict, timeout: int = 300) -> str:
     """Generate security tests using specified model."""
     # Use unified prompt from evaluation.prompts
     prompt = format_test_generation_prompt(
@@ -195,11 +294,13 @@ def generate_tests(model: str, provider: str, sample: Dict) -> str:
     )
 
     if provider == "ollama":
-        return call_ollama(model, prompt)
+        return call_ollama(model, prompt, timeout=timeout)
     elif provider == "openai":
         return call_openai(model, prompt)
     elif provider == "anthropic":
         return call_anthropic(model, prompt)
+    elif provider == "google":
+        return call_google(model, prompt)
     else:
         raise ValueError(f"Unknown provider: {provider}")
 
@@ -232,6 +333,8 @@ def evaluate_model(
     judge_provider: str = "anthropic",
     max_samples: Optional[int] = None,
     start_sample: int = 0,
+    max_mutants: int = 10,
+    timeout: int = 300,
 ) -> ModelResult:
     """Evaluate a single model on the benchmark."""
     print(f"\n{'='*60}")
@@ -254,7 +357,7 @@ def evaluate_model(
 
         try:
             # Generate tests
-            raw_response = generate_tests(model, provider, sample)
+            raw_response = generate_tests(model, provider, sample, timeout=timeout)
             generated_tests = extract_test_code(raw_response)
 
             if not generated_tests.strip():
@@ -262,19 +365,61 @@ def evaluate_model(
                 errors += 1
                 continue
 
-            # Evaluate with mutation testing
-            eval_result = evaluate_generated_tests(sample, generated_tests)
+            # Generate the prompt for logging
+            prompt = format_test_generation_prompt(
+                code=sample["secure_code"],
+                cwe=sample["cwe"],
+                cwe_name=sample.get("cwe_name", "vulnerability"),
+                include_mock_env=True,
+            )
 
+            # Evaluate with mutation testing
+            eval_result = evaluate_generated_tests(sample, generated_tests, max_mutants=max_mutants)
+
+            # Build detailed result with all context needed for analysis
             results.append({
+                # Sample context
                 "sample_id": sample["id"],
                 "cwe": sample["cwe"],
+                "cwe_name": sample.get("cwe_name", ""),
                 "difficulty": sample["difficulty"],
-                "generated_tests": generated_tests,
+                "mutation_operators": sample.get("mutation_operators", []),
+
+                # Original code (what the LLM was asked to test)
+                "secure_code": sample["secure_code"],
+                "insecure_code": sample.get("insecure_code", ""),
+
+                # LLM interaction
+                "prompt": prompt,
+                "raw_response": raw_response,  # Full LLM response before extraction
+                "generated_tests": generated_tests,  # Extracted test code
+
+                # Evaluation results
                 "metrics": eval_result["metrics"],
+                "mutant_details": eval_result.get("mutant_details", []),
+                "test_results": eval_result.get("test_results", []),  # Per-test pass/fail
+
+                # Reference for comparison
+                "reference_tests": sample.get("security_tests", ""),
             })
 
-            ms = eval_result["metrics"].get("mutation_score", 0)
-            print(f"MS={ms:.1%}")
+            # Show detailed mutation score with kill breakdown
+            metrics = eval_result["metrics"]
+            mutant_details = eval_result.get("mutant_details", [])
+            killed = metrics.get("mutants_killed", 0)
+            total = metrics.get("mutants_total", 0)
+            ms = metrics.get("mutation_score")
+
+            if ms is not None and total > 0:
+                # Calculate kill breakdown for this sample
+                semantic = sum(1 for m in mutant_details if m.get("killed") and m.get("kill_type") == "semantic")
+                incidental = sum(1 for m in mutant_details if m.get("killed") and m.get("kill_type") == "assertion_incidental")
+                crash = sum(1 for m in mutant_details if m.get("killed") and m.get("kill_type") == "crash")
+                print(f"MS={killed}/{total} ({ms:.1%}) [Sec:{semantic} Inc:{incidental} Crash:{crash}]")
+            elif total == 0:
+                print(f"MS=N/A (0 mutants)")
+            else:
+                print(f"MS=N/A")
 
         except Exception as e:
             print(f"ERROR: {e}")
@@ -287,17 +432,39 @@ def evaluate_model(
 
     # Calculate aggregates
     if results:
-        mutation_scores = [r["metrics"].get("mutation_score", 0) for r in results]
+        # Handle None values in mutation_score (no mutants generated)
+        mutation_scores = [r["metrics"].get("mutation_score") for r in results]
+        valid_mutation_scores = [ms for ms in mutation_scores if ms is not None]
+
         vuln_detections = [1 if r["metrics"].get("vuln_detected", False) else 0 for r in results]
-        coverages = [r["metrics"].get("line_coverage", 0) for r in results]
+        coverages = [r["metrics"].get("line_coverage", 0) or 0 for r in results]
+
+        # Calculate kill breakdown totals
+        kill_breakdown = calculate_kill_breakdown(results)
+        print(f"\n  Kill Breakdown: Semantic={kill_breakdown['semantic_kills']} "
+              f"Incidental={kill_breakdown['incidental_kills']} "
+              f"Crash={kill_breakdown['crash_kills']} "
+              f"Other={kill_breakdown['other_kills']}")
+        if kill_breakdown['security_mutation_score'] is not None:
+            print(f"  Security Mutation Score: {kill_breakdown['security_mutation_score']:.1%} "
+                  f"(vs Overall: {kill_breakdown['mutation_score']:.1%})")
+
+        # Calculate security precision
+        secure_passes_count = sum(1 for r in results if r["metrics"].get("secure_passes", False))
+        vuln_detected_count = sum(1 for r in results if r["metrics"].get("vuln_detected", False))
+        sec_precision = vuln_detected_count / secure_passes_count if secure_passes_count > 0 else None
 
         model_result = ModelResult(
             model_name=model,
             provider=provider,
             samples_evaluated=len(results),
-            avg_mutation_score=sum(mutation_scores) / len(mutation_scores),
+            avg_mutation_score=sum(valid_mutation_scores) / len(valid_mutation_scores) if valid_mutation_scores else 0.0,
             avg_vuln_detection=sum(vuln_detections) / len(vuln_detections),
             avg_line_coverage=sum(coverages) / len(coverages),
+            avg_security_mutation_score=kill_breakdown.get("security_mutation_score"),
+            avg_incidental_score=kill_breakdown.get("incidental_score"),
+            avg_crash_score=kill_breakdown.get("crash_score"),
+            avg_security_precision=sec_precision,
             evaluation_time=time.time() - start_time,
             errors=errors,
             detailed_results=results,
@@ -355,33 +522,38 @@ def evaluate_model(
 
 def print_results_table(results: List[ModelResult], ref_baseline: Optional[Dict] = None):
     """Print results as a formatted table."""
-    print("\n" + "="*100)
+    print("\n" + "="*112)
     print("LLM BASELINE RESULTS")
-    print("="*100)
+    print("="*112)
 
     # Header
-    print(f"{'Model':<35} {'Mutation':<12} {'Vuln Det':<12} {'Coverage':<12} {'Sec Rel':<12} {'Quality':<12}")
-    print("-"*100)
+    print(f"{'Model':<35} {'Mutation':<12} {'Sec MS':<12} {'Vuln Det':<12} {'Coverage':<12} {'Sec Rel':<12} {'Quality':<12}")
+    print("-"*112)
 
     # Sort by mutation score
     sorted_results = sorted(results, key=lambda x: x.avg_mutation_score, reverse=True)
 
     for r in sorted_results:
-        print(f"{r.model_name:<35} {r.avg_mutation_score:>10.1%} {r.avg_vuln_detection:>10.1%} "
-              f"{r.avg_line_coverage:>10.1%} {r.avg_security_relevance:>10.1%} {r.avg_test_quality:>10.1%}")
+        sec_rel = f"{r.avg_security_relevance:>10.1%}" if r.avg_security_relevance is not None else f"{'N/A':>10}"
+        quality = f"{r.avg_test_quality:>10.1%}" if r.avg_test_quality is not None else f"{'N/A':>10}"
+        sms = f"{r.avg_security_mutation_score:>10.1%}" if r.avg_security_mutation_score is not None else f"{'N/A':>10}"
+        print(f"{r.model_name:<35} {r.avg_mutation_score:>10.1%} {sms} {r.avg_vuln_detection:>10.1%} "
+              f"{r.avg_line_coverage:>10.1%} {sec_rel} {quality}")
 
-    print("-"*100)
+    print("-"*112)
     # Display reference baseline (computed or default)
     if ref_baseline:
         ms = ref_baseline.get('avg_mutation_score', 0)
         vd = ref_baseline.get('avg_vuln_detection', 0)
         cov = ref_baseline.get('avg_line_coverage', 0)
-        sr = ref_baseline.get('avg_security_relevance', 0)
-        tq = ref_baseline.get('avg_test_quality', 0)
-        print(f"{'Reference Tests':<35} {ms:>10.1%} {vd:>10.1%} {cov:>10.1%} {sr:>10.1%} {tq:>10.1%}")
+        sr = ref_baseline.get('avg_security_relevance')
+        tq = ref_baseline.get('avg_test_quality')
+        sr_str = f"{sr:>10.1%}" if sr is not None else f"{'N/A':>10}"
+        tq_str = f"{tq:>10.1%}" if tq is not None else f"{'N/A':>10}"
+        print(f"{'Reference Tests':<35} {ms:>10.1%} {'N/A':>10} {vd:>10.1%} {cov:>10.1%} {sr_str} {tq_str}")
     else:
-        print(f"{'Reference Tests':<35} {'N/A':>12} {'N/A':>12} {'N/A':>12} {'N/A':>12} {'N/A':>12}")
-    print("="*100)
+        print(f"{'Reference Tests':<35} {'N/A':>12} {'N/A':>12} {'N/A':>12} {'N/A':>12} {'N/A':>12} {'N/A':>12}")
+    print("="*112)
 
 
 def save_results(results: List[ModelResult], output_dir: Path, ref_baseline: Optional[Dict] = None):
@@ -396,11 +568,11 @@ def save_results(results: List[ModelResult], output_dir: Path, ref_baseline: Opt
         "timestamp": timestamp,
         "results": [asdict(r) for r in results],
         "reference_baseline": ref_baseline or {
-            "avg_mutation_score": 0,
-            "avg_vuln_detection": 0,
-            "avg_line_coverage": 0,
-            "avg_security_relevance": 0,
-            "avg_test_quality": 0,
+            "avg_mutation_score": None,
+            "avg_vuln_detection": None,
+            "avg_line_coverage": None,
+            "avg_security_relevance": None,
+            "avg_test_quality": None,
         }
     }
 
@@ -414,7 +586,7 @@ def save_results(results: List[ModelResult], output_dir: Path, ref_baseline: Opt
 def main():
     parser = argparse.ArgumentParser(description="Run LLM baseline evaluations")
     parser.add_argument("--models", nargs="+", help="Specific models to evaluate")
-    parser.add_argument("--provider", choices=["ollama", "openai", "anthropic", "all"],
+    parser.add_argument("--provider", choices=["ollama", "openai", "anthropic", "google", "all"],
                        default="ollama", help="Model provider")
     parser.add_argument("--difficulty", choices=["easy", "medium", "hard"],
                        help="Filter by difficulty")
@@ -425,8 +597,15 @@ def main():
     parser.add_argument("--judge-provider", choices=["anthropic", "openai"],
                        default="anthropic", help="Provider for LLM-as-Judge")
     parser.add_argument("--output", default="baselines/results", help="Output directory")
-    parser.add_argument("--shuffle", action="store_true", help="Shuffle samples before slicing (ensures CWE diversity)")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for shuffle (default: 42)")
+    parser.add_argument("--shuffle", action="store_true", default=True, help="Shuffle samples before slicing (ensures CWE diversity) - enabled by default")
+    parser.add_argument("--no-shuffle", action="store_false", dest="shuffle", help="Disable shuffling (process samples in original order)")
+    parser.add_argument("--stratified", action="store_true",
+                       help="Use stratified sampling to ensure proportional CWE representation (recommended)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for shuffle/stratified sampling (default: 42)")
+    parser.add_argument("--max-mutants", type=int, default=10, help="Maximum mutants per sample (default: 10)")
+    parser.add_argument("--timeout", type=int, default=300, help="Ollama request timeout in seconds (default: 300 = 5 min)")
+    parser.add_argument("--skip-invalid", action="store_true",
+                       help="Skip samples where quality.validation_passed is False")
 
     args = parser.parse_args()
 
@@ -435,8 +614,24 @@ def main():
     benchmark = load_benchmark(difficulty=args.difficulty, cwe=args.cwe)
     print(f"Loaded {len(benchmark)} samples")
 
-    # Shuffle if requested (ensures CWE diversity when taking subsets)
-    if args.shuffle:
+    # Filter out invalid samples if requested
+    invalid_count = sum(1 for s in benchmark if not s.get("quality", {}).get("validation_passed", True))
+    if invalid_count > 0:
+        if args.skip_invalid:
+            benchmark = [s for s in benchmark if s.get("quality", {}).get("validation_passed", True)]
+            print(f"Skipped {invalid_count} samples with validation_passed=False ({len(benchmark)} remaining)")
+        else:
+            print(f"Warning: {invalid_count} samples have validation_passed=False. Use --skip-invalid to exclude them.")
+
+    # Apply sampling strategy
+    if args.stratified and args.max_samples:
+        # Use stratified sampling for proportional CWE representation
+        benchmark = stratified_sample(benchmark, args.max_samples, seed=args.seed)
+        print(f"Stratified sampling: {len(benchmark)} samples with proportional CWE coverage (seed={args.seed})")
+        # Clear max_samples since stratified already limited
+        args.max_samples = None
+    elif args.shuffle:
+        # Simple shuffle (ensures CWE diversity when taking subsets)
         import random
         random.seed(args.seed)
         random.shuffle(benchmark)
@@ -466,8 +661,12 @@ def main():
             models_to_eval.append({"name": m, "provider": "ollama"})
     elif args.provider == "openai":
         models_to_eval.append({"name": "gpt-5", "provider": "openai"})
+        models_to_eval.append({"name": "gpt-5-mini-2025-08-07", "provider": "openai"})
     elif args.provider == "anthropic":
         models_to_eval.append({"name": "claude-sonnet-4-5-20250929", "provider": "anthropic"})
+    elif args.provider == "google":
+        models_to_eval.append({"name": "gemini-3-flash-preview", "provider": "google"})
+        models_to_eval.append({"name": "gemini-2.5-pro", "provider": "google"})
 
     print(f"\nModels to evaluate: {[m['name'] for m in models_to_eval]}")
 
@@ -484,6 +683,8 @@ def main():
                 judge_provider=args.judge_provider,
                 max_samples=args.max_samples,
                 start_sample=args.start_sample,
+                max_mutants=args.max_mutants,
+                timeout=args.timeout,
             )
             all_results.append(result)
         except Exception as e:

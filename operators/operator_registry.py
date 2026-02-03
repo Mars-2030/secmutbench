@@ -59,7 +59,7 @@ CWE_OPERATOR_MAP: Dict[str, List[str]] = {
     "CWE-79": ["RVALID", "RHTTPO"],  # XSS
     "CWE-78": ["CMDINJECT", "RVALID"],  # OS Command Injection
     "CWE-77": ["CMDINJECT"],  # Command Injection
-    "CWE-94": ["SSTI"],  # Improper Control of Code Generation
+    "CWE-94": ["DESERIAL", "RVALID"],  # Improper Control of Code Generation (eval/exec)
     "CWE-1336": ["SSTI"],  # Server-Side Template Injection
 
     # Path traversal

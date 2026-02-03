@@ -42,33 +42,35 @@ except ImportError:
 
 CWE_REGISTRY = {
     # Tier 1: High priority / most common
+    # Synced with operators/operator_registry.py CWE_OPERATOR_MAP
     "CWE-89": {"name": "SQL Injection", "operators": ["PSQLI", "RVALID"], "tier": 1},
-    "CWE-79": {"name": "Cross-Site Scripting (XSS)", "operators": ["RVALID"], "tier": 1},
+    "CWE-79": {"name": "Cross-Site Scripting (XSS)", "operators": ["RVALID", "RHTTPO"], "tier": 1},
     "CWE-78": {"name": "OS Command Injection", "operators": ["CMDINJECT", "RVALID"], "tier": 1},
     "CWE-22": {"name": "Path Traversal", "operators": ["PATHCONCAT", "RVALID"], "tier": 1},
-    "CWE-20": {"name": "Improper Input Validation", "operators": ["RVALID"], "tier": 1},
+    "CWE-20": {"name": "Improper Input Validation", "operators": ["INPUTVAL", "RVALID"], "tier": 1},
 
     # Tier 2: Important security issues
     "CWE-287": {"name": "Improper Authentication", "operators": ["RMAUTH"], "tier": 2},
     "CWE-798": {"name": "Hardcoded Credentials", "operators": ["HARDCODE"], "tier": 2},
     "CWE-502": {"name": "Insecure Deserialization", "operators": ["DESERIAL"], "tier": 2},
     "CWE-327": {"name": "Weak Cryptography", "operators": ["WEAKCRYPTO"], "tier": 2},
-    "CWE-352": {"name": "Cross-Site Request Forgery", "operators": ["RVALID"], "tier": 2},
+    "CWE-328": {"name": "Weak Hash Function", "operators": ["WEAKCRYPTO"], "tier": 2},  # NEW: was missing
+    "CWE-352": {"name": "Cross-Site Request Forgery", "operators": ["CSRF_REMOVE"], "tier": 2},  # FIXED: was RVALID
     "CWE-306": {"name": "Missing Authentication", "operators": ["RMAUTH"], "tier": 2},
-    "CWE-94": {"name": "Code Injection", "operators": ["RVALID"], "tier": 2},
+    "CWE-94": {"name": "Code Injection", "operators": ["DESERIAL", "RVALID"], "tier": 2},  # FIXED: DESERIAL for ast.literal_eval patterns
 
     # Tier 3: Additional security concerns
-    "CWE-611": {"name": "XXE Injection", "operators": ["RVALID"], "tier": 3},
-    "CWE-918": {"name": "Server-Side Request Forgery", "operators": ["RVALID"], "tier": 3},
+    "CWE-611": {"name": "XXE Injection", "operators": ["XXE"], "tier": 3},  # FIXED: was RVALID
+    "CWE-918": {"name": "Server-Side Request Forgery", "operators": ["SSRF"], "tier": 3},  # FIXED: was RVALID
     "CWE-319": {"name": "Cleartext Transmission", "operators": ["RENCRYPT"], "tier": 3},
     "CWE-295": {"name": "Improper Certificate Validation", "operators": ["RENCRYPT"], "tier": 3},
     "CWE-312": {"name": "Cleartext Storage of Sensitive Info", "operators": ["RENCRYPT"], "tier": 3},
-    "CWE-338": {"name": "Weak PRNG", "operators": ["WEAKCRYPTO"], "tier": 3},
+    "CWE-338": {"name": "Weak PRNG", "operators": ["WEAKRANDOM"], "tier": 3},  # FIXED: was WEAKCRYPTO
     "CWE-434": {"name": "Unrestricted Upload", "operators": ["RVALID"], "tier": 3},
-    "CWE-639": {"name": "Authorization Bypass (IDOR)", "operators": ["RMAUTH"], "tier": 3},
+    "CWE-639": {"name": "Authorization Bypass (IDOR)", "operators": ["IDOR"], "tier": 3},  # FIXED: was RMAUTH
     "CWE-862": {"name": "Missing Authorization", "operators": ["RMAUTH"], "tier": 3},
-    "CWE-942": {"name": "Permissive CORS", "operators": ["RVALID"], "tier": 3},
-    "CWE-1336": {"name": "Template Injection (SSTI)", "operators": ["RVALID"], "tier": 3},
+    "CWE-942": {"name": "Permissive CORS", "operators": ["CORS_WEAK"], "tier": 3},  # FIXED: was RVALID
+    "CWE-1336": {"name": "Template Injection (SSTI)", "operators": ["SSTI"], "tier": 3},  # FIXED: was RVALID
     "CWE-116": {"name": "Improper Output Encoding", "operators": ["RVALID"], "tier": 3},
 }
 

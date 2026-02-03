@@ -36,6 +36,29 @@ class MockSubprocess:
         assert ";" not in str(subprocess.last_command), "Injection in command"
     """
 
+    # Exception classes that subprocess provides
+    class CalledProcessError(Exception):
+        """Exception raised when a process returns a non-zero exit code."""
+        def __init__(self, returncode, cmd, output=None, stderr=None):
+            self.returncode = returncode
+            self.cmd = cmd
+            self.output = output
+            self.stderr = stderr
+            super().__init__(f"Command '{cmd}' returned non-zero exit status {returncode}")
+
+    class TimeoutExpired(Exception):
+        """Exception raised when a process times out."""
+        def __init__(self, cmd, timeout, output=None, stderr=None):
+            self.cmd = cmd
+            self.timeout = timeout
+            self.output = output
+            self.stderr = stderr
+            super().__init__(f"Command '{cmd}' timed out after {timeout} seconds")
+
+    class SubprocessError(Exception):
+        """Base exception for subprocess errors."""
+        pass
+
     # Common injection patterns to detect
     INJECTION_PATTERNS = [
         ";", "&&", "||", "|", "`", "$(",  # Command chaining/substitution

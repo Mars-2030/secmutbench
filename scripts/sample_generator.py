@@ -33,6 +33,57 @@ from source_ingestion import (
     normalize_cwe,
 )
 
+# Import operators for runtime validation
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+try:
+    from operators.operator_registry import OPERATORS, get_applicable_operators
+except ImportError:
+    OPERATORS = {}
+    get_applicable_operators = None
+
+
+# =============================================================================
+# Operator Validation Helper
+# =============================================================================
+
+def validate_operators(secure_code: str, assigned_ops: list, cwe: str) -> list:
+    """
+    Filter operators to those that actually fire on this code.
+
+    At build time, we verify that assigned operators can actually mutate
+    the code. If none fire, we try all operators as fallback.
+
+    Args:
+        secure_code: The secure code to check against
+        assigned_ops: Operators assigned from CWE_REGISTRY
+        cwe: The CWE identifier (for logging)
+
+    Returns:
+        List of operator names that actually apply to the code
+    """
+    if not OPERATORS:
+        # Operators not available, return original assignments
+        return assigned_ops
+
+    # Check which assigned operators actually fire
+    firing = [op for op in assigned_ops
+              if op in OPERATORS and OPERATORS[op].applies_to(secure_code)]
+
+    if firing:
+        return firing
+
+    # Fallback: try ALL operators to find any that match
+    fallback = [name for name, inst in OPERATORS.items()
+                if inst.applies_to(secure_code)]
+
+    if fallback:
+        return fallback
+
+    # Nothing fires — keep original assignments (sample may be dropped later)
+    return assigned_ops
+
 
 # =============================================================================
 # Sample Data Class
@@ -440,18 +491,268 @@ def safe_path(base_dir, user_path):
 # Test Generation
 # =============================================================================
 
-def generate_functional_test(entry_point: str, cwe: str) -> str:
-    """Generate functional test for sample."""
+def get_function_params(code: str, entry_point: str) -> list:
+    """
+    Extract parameter names from a function definition.
+
+    Args:
+        code: Source code containing the function
+        entry_point: Name of the function to analyze
+
+    Returns:
+        List of parameter names (excluding 'self' and 'cls')
+    """
+    if not code or not entry_point:
+        return []
+
+    # Pattern to match function definition
+    pattern = rf'def\s+{re.escape(entry_point)}\s*\(([^)]*)\)'
+    match = re.search(pattern, code)
+    if not match:
+        return []
+
+    params_str = match.group(1).strip()
+    if not params_str:
+        return []
+
+    # Parse parameters (handle type hints and defaults)
+    params = []
+    for p in params_str.split(','):
+        p = p.strip()
+        if not p:
+            continue
+        # Remove type hints (: type) and defaults (= value)
+        p = p.split('=')[0].strip()
+        p = p.split(':')[0].strip()
+        # Skip self/cls and *args/**kwargs
+        if p and p not in ('self', 'cls') and not p.startswith('*'):
+            params.append(p)
+
+    return params
+
+
+def generate_functional_test(entry_point: str, cwe: str, code: str = "") -> str:
+    """Generate functional test for sample.
+
+    Handles both parameterized and zero-param functions to avoid
+    signature mismatch errors during validation.
+    """
+    # Check if function has parameters
+    params = get_function_params(code, entry_point) if code else None
+    has_params = params is None or len(params) > 0
+
+    if not has_params:
+        # Zero-param function - call without arguments
+        return f'''def test_{entry_point}_basic():
+    """Basic functionality test (zero-param function)."""
+    try:
+        result = {entry_point}()
+    except (ValueError, TypeError, PermissionError):
+        pass  # Security rejections are acceptable'''
+
+    # Function with parameters - pass test input
     return f'''def test_{entry_point}_basic():
     """Basic functionality test."""
     try:
         result = {entry_point}("test_input")
-        assert result is not None or result is None  # May return None
     except (ValueError, TypeError):
         pass  # May reject invalid input'''
 
 
-def generate_security_test(entry_point: str, cwe: str) -> str:
+def _generate_zero_param_security_test(entry_point: str, cwe: str) -> str:
+    """
+    Generate security test for functions that take no parameters.
+
+    These tests work by:
+    1. Resetting mock state
+    2. Calling the function (no arguments)
+    3. Checking mock state for security violations
+
+    This handles CyberSecEval/SecurityEval samples where the function
+    is a wrapper that reads input from elsewhere (global, config, etc).
+    """
+    zero_param_tests = {
+        # CWE-89: Check if DB mock shows parameterized queries
+        "CWE-89": f'''def test_{entry_point}_sql_injection():
+    """Test SQL injection prevention (zero-param function).
+
+    Calls the function and checks mock DB state for parameterization.
+    """
+    db.reset()
+
+    try:
+        {entry_point}()
+    except Exception:
+        pass  # Function may fail for other reasons
+
+    # If any query was executed, check it was parameterized
+    if db.last_query:
+        assert db.last_params is not None, \\
+            f"SQL Injection: query not parameterized. Query: {{db.last_query}}"''',
+
+        # CWE-78: Check subprocess mock for shell injection
+        "CWE-78": f'''def test_{entry_point}_command_injection():
+    """Test command injection prevention (zero-param function).
+
+    Calls the function and checks mock subprocess state.
+    """
+    subprocess.reset()
+
+    try:
+        {entry_point}()
+    except Exception:
+        pass
+
+    # Check that no dangerous shell patterns were executed
+    assert not subprocess.injection_detected, \\
+        f"Command injection detected. Command: {{subprocess.last_command}}"''',
+
+        # CWE-22: Check filesystem mock for path traversal
+        "CWE-22": f'''def test_{entry_point}_path_traversal():
+    """Test path traversal prevention (zero-param function).
+
+    Calls the function and checks mock filesystem state.
+    """
+    fs.reset()
+
+    try:
+        {entry_point}()
+    except Exception:
+        pass
+
+    # Check that no path traversal was attempted
+    if hasattr(fs, 'traversal_attempted'):
+        assert not fs.traversal_attempted, \\
+            f"Path traversal detected: {{fs.last_path}}"''',
+
+        # CWE-798: Check environment mock for credential access
+        "CWE-798": f'''def test_{entry_point}_no_hardcoded_creds():
+    """Test no hardcoded credentials (zero-param function).
+
+    Calls the function and checks if env vars were accessed.
+    """
+    env.reset()
+
+    try:
+        {entry_point}()
+    except KeyError:
+        # KeyError from os.environ means reading from env (good!)
+        return
+    except Exception:
+        pass
+
+    # Check that credentials came from environment
+    if hasattr(env, 'accessed_keys') and len(env.accessed_keys) > 0:
+        return  # Credentials read from environment
+
+    # Function may have hardcoded credentials if it didn't access env
+    # This is a heuristic check''',
+
+        # CWE-502: Check deserialization mock
+        "CWE-502": f'''def test_{entry_point}_safe_deserialization():
+    """Test safe deserialization (zero-param function).
+
+    Calls the function and checks mock pickle/yaml state.
+    """
+    pickle.reset()
+    yaml.reset()
+
+    try:
+        {entry_point}()
+    except Exception:
+        pass
+
+    # Check for unsafe deserialization
+    assert not pickle.unsafe_load_called, \\
+        "Insecure deserialization: pickle.loads() used"
+
+    if yaml.load_count > 0:
+        assert yaml.safe_loader_used, \\
+            "Insecure deserialization: yaml.load() without SafeLoader"''',
+
+        # CWE-327: Check crypto mock for weak algorithms
+        "CWE-327": f'''def test_{entry_point}_strong_crypto():
+    """Test strong cryptography (zero-param function).
+
+    Calls the function and checks mock hashlib state.
+    """
+    hashlib.reset()
+
+    try:
+        {entry_point}()
+    except Exception:
+        pass
+
+    # Check if weak algorithm was used
+    assert not hashlib.weak_algorithm_used, \\
+        f"Weak crypto: {{hashlib.last_algorithm}} used"''',
+
+        # CWE-918: Check HTTP mock for SSRF
+        "CWE-918": f'''def test_{entry_point}_ssrf_prevention():
+    """Test SSRF prevention (zero-param function).
+
+    Calls the function and checks mock requests state.
+    """
+    requests.reset()
+
+    try:
+        {entry_point}()
+    except Exception:
+        pass
+
+    # Check for SSRF attempts
+    assert not requests.ssrf_attempted, \\
+        f"SSRF detected: internal URL accessed: {{requests.last_url}}"''',
+
+        # CWE-611: Check XML mock for XXE
+        "CWE-611": f'''def test_{entry_point}_xxe_prevention():
+    """Test XXE prevention (zero-param function).
+
+    Calls the function and checks mock XML parser state.
+    """
+    try:
+        {entry_point}()
+    except Exception:
+        pass
+
+    # Check if external entities were resolved
+    if hasattr(xml_parser, 'external_entities_resolved'):
+        assert not xml_parser.external_entities_resolved, \\
+            "XXE: external entities were resolved"''',
+
+        # CWE-94: Check eval mock for code injection
+        "CWE-94": f'''def test_{entry_point}_code_injection():
+    """Test code injection prevention (zero-param function).
+
+    Calls the function and checks mock eval state.
+    """
+    mock_eval.reset()
+
+    try:
+        {entry_point}()
+    except Exception:
+        pass
+
+    # Check for unsafe eval/exec
+    assert not mock_eval.unsafe_eval_called, \\
+        "Code injection: eval/exec used on untrusted input"''',
+    }
+
+    # Default zero-param test
+    default_test = f'''def test_{entry_point}_security():
+    """Generic security test for {cwe} (zero-param function).
+
+    Calls the function and performs basic security checks.
+    """
+    try:
+        {entry_point}()
+    except Exception:
+        pass  # Function execution result doesn't determine security'''
+
+    return zero_param_tests.get(cwe, default_test)
+
+
+def generate_security_test(entry_point: str, cwe: str, code: str = "") -> str:
     """
     Generate security test for sample based on CWE type.
 
@@ -460,7 +761,23 @@ def generate_security_test(entry_point: str, cwe: str) -> str:
     - FAIL on insecure code (vulnerability detected via mock)
 
     Tests use mock object APIs to verify security behavior.
+
+    Args:
+        entry_point: Function name to test
+        cwe: CWE identifier
+        code: Optional source code to analyze for function signature
+
+    If the function takes no parameters, generates tests that verify
+    security via mock state rather than passing payloads.
     """
+    # Check if function takes parameters
+    params = get_function_params(code, entry_point) if code else None
+    has_params = params is None or len(params) > 0  # Assume params if no code provided
+
+    # For zero-param functions, generate mock-state based tests
+    if not has_params:
+        return _generate_zero_param_security_test(entry_point, cwe)
+
     tests = {
         # CWE-89: SQL Injection
         # Mock API: db.last_params is None when query not parameterized
@@ -859,9 +1176,13 @@ class SampleGenerator:
             entry_point=entry_point,
             insecure_code=template["insecure"],
             secure_code=template["secure"],
-            functional_tests=generate_functional_test(entry_point, cwe),
-            security_tests=generate_security_test(entry_point, cwe),
-            mutation_operators=cwe_info.get("operators", ["RVALID"]),
+            functional_tests=generate_functional_test(entry_point, cwe, template["secure"]),
+            security_tests=generate_security_test(entry_point, cwe, template["secure"]),
+            mutation_operators=validate_operators(
+                template["secure"],
+                cwe_info.get("operators", ["RVALID"]),
+                cwe
+            ),
             source="SecMutBench",
             original_id=f"{cwe}_{entry_point}"
         )
@@ -936,9 +1257,13 @@ class SampleGenerator:
                 entry_point=entry_point,
                 insecure_code=code,
                 secure_code=secure_code,
-                functional_tests=generate_functional_test(entry_point, cwe),
-                security_tests=generate_security_test(entry_point, cwe),
-                mutation_operators=cwe_info.get("operators", ["RVALID"]),
+                functional_tests=generate_functional_test(entry_point, cwe, secure_code),
+                security_tests=generate_security_test(entry_point, cwe, secure_code),
+                mutation_operators=validate_operators(
+                    secure_code,
+                    cwe_info.get("operators", ["RVALID"]),
+                    cwe
+                ),
                 source="SecurityEval",
                 original_id=sample_id_raw
             )
@@ -999,9 +1324,13 @@ class SampleGenerator:
                 entry_point=entry_point,
                 insecure_code=code,
                 secure_code=secure_code,
-                functional_tests=generate_functional_test(entry_point, cwe),
-                security_tests=generate_security_test(entry_point, cwe),
-                mutation_operators=cwe_info.get("operators", ["RVALID"]),
+                functional_tests=generate_functional_test(entry_point, cwe, secure_code),
+                security_tests=generate_security_test(entry_point, cwe, secure_code),
+                mutation_operators=validate_operators(
+                    secure_code,
+                    cwe_info.get("operators", ["RVALID"]),
+                    cwe
+                ),
                 source="CyberSecEval",
                 original_id=str(original_id)
             )

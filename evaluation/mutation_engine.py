@@ -77,14 +77,17 @@ class MutationEngine:
                 for name in operators
                 if name in OPERATORS
             }
+            self.operator_names = set(operators)
         else:
             self.operators = OPERATORS
+            self.operator_names = set(OPERATORS.keys())
 
     def generate_mutants(
         self,
         code: str,
         cwe: Optional[str] = None,
         max_mutants: Optional[int] = None,
+        allow_additional: bool = True,
     ) -> MutationResult:
         """
         Generate mutants from the given code.
@@ -93,6 +96,8 @@ class MutationEngine:
             code: Source code to mutate
             cwe: Optional CWE to target specific operators
             max_mutants: Maximum number of mutants to generate
+            allow_additional: If True, try additional operators beyond assigned ones
+                             to increase mutant count (multi-operator stacking)
 
         Returns:
             MutationResult containing all generated mutants
@@ -134,21 +139,55 @@ class MutationEngine:
                         mutant_count += 1
 
                         if max_mutants and mutant_count >= max_mutants:
+                            # Deduplicate before returning
+                            result.mutants = self._deduplicate_mutants(result.mutants)
                             return result
 
             except Exception as e:
                 result.errors.append(f"{name}: {str(e)}")
 
+        # Multi-operator stacking: try additional operators if under max_mutants
+        if allow_additional and (max_mutants is None or mutant_count < max_mutants):
+            # Try all operators that weren't already used
+            for name, operator in OPERATORS.items():
+                if name not in self.operator_names and name not in [m.operator for m in result.mutants]:
+                    try:
+                        if operator.applies_to(code):
+                            mutations = operator.mutate(code)
+                            if mutations:
+                                result.operators_applied.append(name)
+                                for mutated_code, description in mutations:
+                                    if mutated_code != code:
+                                        mutant = Mutant(
+                                            id="",
+                                            original_code=code,
+                                            mutated_code=mutated_code,
+                                            operator=name,
+                                            description=description,
+                                        )
+                                        result.mutants.append(mutant)
+                                        mutant_count += 1
+
+                                        if max_mutants and mutant_count >= max_mutants:
+                                            result.mutants = self._deduplicate_mutants(result.mutants)
+                                            return result
+                    except Exception as e:
+                        result.errors.append(f"{name}: {str(e)}")
+
         # Remove duplicate mutants (same mutated code)
+        result.mutants = self._deduplicate_mutants(result.mutants)
+
+        return result
+
+    def _deduplicate_mutants(self, mutants: List[Mutant]) -> List[Mutant]:
+        """Remove duplicate mutants based on mutated code content."""
         seen = set()
         unique_mutants = []
-        for mutant in result.mutants:
+        for mutant in mutants:
             if mutant.mutated_code not in seen:
                 seen.add(mutant.mutated_code)
                 unique_mutants.append(mutant)
-        result.mutants = unique_mutants
-
-        return result
+        return unique_mutants
 
     def get_operator_coverage(self, code: str) -> Dict[str, bool]:
         """
