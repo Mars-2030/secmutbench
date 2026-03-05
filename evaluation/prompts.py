@@ -141,6 +141,53 @@ CWE_ATTACK_VECTORS = {
 - Catastrophic backtracking with nested quantifiers
 - Alternation with overlap patterns
 - CPU exhaustion via regex complexity""",
+
+    # === New CWEs added in v2.5.0 ===
+    "CWE-95": """- Direct eval injection: `eval(user_input)`, `exec(user_code)`
+- AST bypass attempts: `__import__('os').system('cmd')`
+- Code object manipulation: `compile()` with user input
+- Builtin access: `__builtins__['eval']`
+- Class introspection: `__class__.__mro__[1].__subclasses__()`""",
+
+    "CWE-601": """- Open redirect: `redirect(user_url)` without validation
+- URL parameter injection: `?next=http://evil.com`, `?return_url=//attacker.com`
+- Protocol-relative URLs: `//evil.com/phish`
+- Domain spoofing: `http://legitimate.com@evil.com`
+- Path confusion: `/legitimate.com` vs `//legitimate.com`""",
+
+    "CWE-295": """- Disabled verification: `verify=False`, `CERT_NONE`
+- Hostname check bypass: `check_hostname=False`
+- Unverified context: `ssl._create_unverified_context()`
+- Self-signed cert acceptance without validation
+- Downgrade attacks: forcing HTTP over HTTPS""",
+
+    "CWE-209": """- Stack trace exposure: `traceback.format_exc()` to user
+- Debug mode in production: `debug=True`, `DEBUG=True`
+- Verbose error messages: `str(exception)` in response
+- System path disclosure in errors
+- Database error messages with schema info""",
+
+    "CWE-400": """- ReDoS patterns: `(a+)+`, `([a-zA-Z]+)*`, `(a|aa)+`
+- Nested quantifiers: `(.*)*`, `(.+)+`
+- Catastrophic backtracking on malicious input
+- Regex timeout bypass
+- CPU exhaustion via polynomial/exponential complexity""",
+
+    "CWE-1333": """- Same as CWE-400 (ReDoS alias)
+- Inefficient regular expression complexity
+- Backtracking regex patterns""",
+
+    "CWE-862": """- Missing authorization check on sensitive operation
+- Direct object reference without ownership validation
+- Admin function without role check
+- API endpoint without permission decorator
+- Privilege escalation via missing ACL""",
+
+    "CWE-352": """- Missing CSRF token validation
+- Cross-site request forgery via form submission
+- State-changing GET requests
+- Token bypass via referrer manipulation
+- SameSite cookie misconfiguration""",
 }
 
 
@@ -219,6 +266,96 @@ def test_xss_script_injection():
 ```
 
 Output ONLY valid Python test functions, nothing else."""
+
+
+# =============================================================================
+# Ablation Study Prompts
+# =============================================================================
+
+# Ablation 1: No security hint - just ask for "tests" without any CWE context
+PROMPT_NO_HINT = """Write tests for the following Python function.
+Generate pytest-compatible test functions.
+
+```python
+{code}
+```
+
+Entry point: `{entry_point}`
+
+Requirements:
+1. Write pytest-style functions starting with `test_`
+2. Test the function's behavior with various inputs
+3. Include edge cases and boundary conditions
+4. Use assertions to verify expected behavior
+5. Do NOT include import statements
+
+Output ONLY valid Python test functions, nothing else."""
+
+
+# Ablation 2: CWE ID only - mention the CWE but no detailed guidance or mock docs
+PROMPT_CWE_ID_ONLY = """Write tests to detect {cwe} vulnerabilities in the following Python function.
+Generate pytest-compatible test functions.
+
+```python
+{code}
+```
+
+Entry point: `{entry_point}`
+
+Requirements:
+1. Write pytest-style functions starting with `test_`
+2. Focus on detecting {cwe} vulnerabilities
+3. Tests should PASS on secure implementations
+4. Tests should FAIL on vulnerable implementations
+5. Do NOT include import statements
+
+Output ONLY valid Python test functions, nothing else."""
+
+
+def format_prompt_no_hint(code: str, entry_point: str = "function") -> str:
+    """
+    Format the no-hint ablation prompt.
+
+    This prompt removes all security context - no CWE, no attack vectors,
+    no mock environment documentation. Used for ablation study.
+
+    Args:
+        code: The source code to generate tests for
+        entry_point: The function name to test
+
+    Returns:
+        Formatted prompt string
+    """
+    return PROMPT_NO_HINT.format(
+        code=code,
+        entry_point=entry_point,
+    )
+
+
+def format_prompt_cwe_id_only(
+    code: str,
+    cwe: str,
+    entry_point: str = "function",
+) -> str:
+    """
+    Format the CWE-ID-only ablation prompt.
+
+    This prompt mentions the CWE but provides no detailed guidance,
+    attack vectors, or mock environment documentation. Used for ablation study.
+
+    Args:
+        code: The source code to generate tests for
+        cwe: CWE identifier (e.g., "CWE-89")
+        entry_point: The function name to test
+
+    Returns:
+        Formatted prompt string
+    """
+    return PROMPT_CWE_ID_ONLY.format(
+        code=code,
+        cwe=cwe,
+        entry_point=entry_point,
+    )
 
 
 def format_test_generation_prompt(
@@ -380,6 +517,11 @@ __all__ = [
     "TEST_GENERATION_PROMPT",
     "format_test_generation_prompt",
     "get_attack_vectors",
+    # Ablation study prompts
+    "PROMPT_NO_HINT",
+    "PROMPT_CWE_ID_ONLY",
+    "format_prompt_no_hint",
+    "format_prompt_cwe_id_only",
     # LLM-as-Judge
     "SECURITY_RELEVANCE_SYSTEM_PROMPT",
     "SECURITY_RELEVANCE_PROMPT",

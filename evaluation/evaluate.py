@@ -7,6 +7,7 @@ Supports multi-modal evaluation with LLM-as-judge metrics.
 
 import json
 import argparse
+import re
 import time
 from typing import Dict, List, Any, Optional
 from pathlib import Path
@@ -33,6 +34,8 @@ try:
         create_evaluator,
         format_multimodal_report,
     )
+    from evaluation.version import get_version_info, __version__
+    from evaluation.prompts import format_test_generation_prompt
 except ImportError:
     # Fallback for running scripts directly without package installation
     import os
@@ -57,60 +60,377 @@ except ImportError:
         create_evaluator,
         format_multimodal_report,
     )
+    from evaluation.version import get_version_info, __version__
+    from evaluation.prompts import format_test_generation_prompt
 
 
 # =============================================================================
-# Kill Classification
+# Kill Classification — Operator-Aware
 # =============================================================================
 
-# Security-related terms that indicate a security-aware assertion
-SECURITY_INDICATORS = [
-    # Injection
-    'inject', 'sqli', 'xss', 'command', 'shell', 'exec', 'eval',
-    # Traversal
-    'traversal', 'path', '../', '..\\',
-    # Serialization
-    'pickle', 'deserial', 'yaml', 'safe_load', 'literal_eval',
-    # Credentials
-    'hardcoded', 'credential', 'password', 'secret', 'api_key', 'token',
-    # Sanitization
-    'sanitize', 'escape', 'validate', 'filter', 'clean', 'encode',
-    # Auth
-    'auth', 'login', 'session', 'csrf', 'permission', 'access',
-    # Crypto
-    'encrypt', 'hash', 'md5', 'sha1', 'weak', 'salt', 'iteration', 'bcrypt',
-    # SQL
-    'parameterized', 'prepared', 'placeholder', 'bind', 'query',
-    # General security
-    'whitelist', 'blacklist', 'allow', 'deny', 'malicious', 'attack',
-    'vulnerability', 'secure', 'unsafe', 'dangerous', 'tainted',
+# Operator-specific security patterns for accurate kill classification
+# Each operator maps to keywords that indicate genuine security awareness
+OPERATOR_SECURITY_PATTERNS = {
+    # CWE-89: SQL Injection
+    "PSQLI": [
+        "parameterized", "prepared", "placeholder", "bind",
+        "sql", "quer", "inject", "sqli",
+        "last_params", "string.*concat", "interpolat",
+        "execute", "cursor", "database",
+    ],
+    # CWE-78: Command Injection
+    "CMDINJECT": [
+        "shell", "command", "inject", "subprocess",
+        "exec", "last_shell", "injection_detected",
+        "shlex", "sanitize.*command", "popen",
+        "os.system", "pipe", "backtick",
+    ],
+    # CWE-22: Path Traversal
+    "PATHCONCAT": [
+        "traversal", r"\.\./", r"\.\.\\\\", "path",
+        "base_dir", "realpath", "abspath", "normalize",
+        "directory", "file.*access", "startswith",
+        "parent", "escape.*dir",
+    ],
+    # CWE-327/328: Weak Cryptography
+    "WEAKCRYPTO": [
+        "md5", "sha1", "weak.*algorithm", "hash",
+        "encrypt", "bcrypt", "salt", "iteration",
+        "weak_algorithm_used", "last_algorithm",
+        "crypto", "digest", "pbkdf",
+    ],
+    # CWE-502: Insecure Deserialization
+    "DESERIAL": [
+        "pickle", "deserial", "yaml", "safe_load",
+        "literal_eval", "unsafe_load", "safeloader",
+        "marshal", "shelve", "unpickle",
+    ],
+    # CWE-918: SSRF
+    "SSRF": [
+        "ssrf", "internal.*url", "localhost", "127.0.0.1",
+        "169.254", "metadata", "ssrf_attempted",
+        "url.*valid", "scheme", "private.*ip",
+        "blocked.*host", "allowlist",
+    ],
+    # CWE-611: XXE
+    "XXE": [
+        "xxe", "external.*entit", "xml.*parse",
+        "doctype", "entity", "dtd",
+        "external_entities_resolved", "defused",
+    ],
+    # CWE-798: Hardcoded Credentials
+    "HARDCODE": [
+        "hardcoded", "credential", "password", "secret",
+        "api_key", "token", "environ", "env.*var",
+        "access_log", "sensitive_accessed",
+        "getenv", "was_accessed",
+    ],
+    # CWE-79: XSS / Input Validation
+    "RVALID": [
+        "xss", "script", "escape", "sanitize",
+        "html.*escape", "encode", "cross.*site",
+        "injection", "markup", "bleach",
+    ],
+    # CWE-20: Input Validation
+    "INPUTVAL": [
+        "validate", "sanitize", "filter", "whitelist",
+        "blacklist", "allow", "deny", "regex",
+        "clean", "input.*check", "boundary",
+        "range", "type.*error", "invalid",
+    ],
+    # CWE-20: Subdomain Spoofing
+    "SUBDOMAIN_SPOOF": [
+        "subdomain", "domain", "host", "url",
+        "spoof", "endswith", "startswith",
+        "validate.*url", "allow.*domain",
+    ],
+    # CWE-1004: HttpOnly Cookie
+    "RHTTPO": [
+        "httponly", "cookie", "secure.*flag",
+        "session", "xss", "javascript",
+    ],
+    # CWE-287/306: Auth Removal
+    "RMAUTH": [
+        "auth", "login", "session", "permission",
+        "access.*control", "is_authenticated",
+        "credential", "token.*valid", "bypass",
+        "unauthorized", "decorator",
+    ],
+    # CWE-319/311: Encryption Removal
+    "RENCRYPT": [
+        "encrypt", "decrypt", "cipher", "aes",
+        "rsa", "key", "plaintext", "ssl",
+        "tls", "https", "verify",
+    ],
+    # CWE-639/284: IDOR
+    "IDOR": [
+        "auth", "owner", "permission", "access",
+        "user_id", "session", "unauthorized",
+        "belongs.*to", "ownership", "forbidden",
+    ],
+    # CWE-1336/94: SSTI
+    "SSTI": [
+        "template", "render", "jinja", "inject",
+        "expression", "sandbox", "autoescape",
+    ],
+    # CWE-942/346: Weak CORS
+    "CORS_WEAK": [
+        "cors", "origin", "access-control", "cross.*origin",
+        "wildcard", "header", "credential",
+    ],
+    # CWE-352: CSRF
+    "CSRF_REMOVE": [
+        "csrf", "token", "cross.*site.*request",
+        "forgery", "session", "csrftoken",
+    ],
+    # CWE-338/330/331: Weak Random
+    "WEAKRANDOM": [
+        "random", "seed", "urandom", "secrets",
+        "cryptographic", "predictable", "entropy",
+        "prng", "secure.*random",
+    ],
+    # === New operators added in v2.5.0 ===
+    # CWE-95: Code Injection via eval
+    "EVALINJECT": [
+        "eval", "exec", "compile", "code.*inject",
+        "literal_eval", "ast", "safe_eval",
+        "unsafe_eval_called", "injection_detected",
+        "__import__", "builtins",
+    ],
+    # CWE-601: Open Redirect
+    "OPENREDIRECT": [
+        "redirect", "url", "location", "302",
+        "next", "return_url", "continue",
+        "domain", "host", "validate.*url",
+        "same_origin", "allowed_hosts",
+    ],
+    # CWE-295: Certificate Validation
+    "NOCERTVALID": [
+        "verify", "certificate", "ssl", "tls",
+        "cert_none", "check_hostname", "insecure",
+        "unverified", "https", "trust",
+    ],
+    # CWE-209: Information Exposure
+    "INFOEXPOSE": [
+        "traceback", "stack", "error", "debug",
+        "exception", "sensitive", "expose",
+        "message", "detail", "verbose",
+    ],
+    # CWE-400/1333: ReDoS
+    "REGEXDOS": [
+        "regex", "pattern", "timeout", "backtrack",
+        "catastrophic", "redos", "quantifier",
+        "re.match", "re.search", "compile",
+    ],
+    # CWE-862: Missing Authorization
+    "MISSINGAUTH": [
+        "authori", "permission", "access.*control",
+        "role", "privilege", "admin", "owner",
+        "forbidden", "403", "acl",
+    ],
+    # CWE-778: Insufficient Logging
+    "INSUFFLOG": [
+        "log", "audit", "monitor", "track",
+        "record", "security.*event", "alert",
+    ],
+    # CWE-352: CSRF (already exists as CSRF_REMOVE, adding alias patterns)
+    "CSRF": [
+        "csrf", "token", "cross.*site.*request",
+        "forgery", "session", "csrftoken",
+        "x-csrf", "validate.*token",
+    ],
+}
+
+# Fallback patterns for operators not in the dict or when operator is unknown
+GENERIC_SECURITY_PATTERNS = [
+    "inject", "malicious", "attack", "vulnerability",
+    "secure", "unsafe", "dangerous", "tainted",
+    "exploit", "bypass", "unauthorized",
 ]
 
 
-def classify_kill(error: str) -> str:
+# =============================================================================
+# Layer 1.5: Operator-to-Mock Mapping for Observability-Based Classification
+# =============================================================================
+# Maps each operator to the mock objects and security-relevant attributes
+# that would indicate genuine security awareness if accessed during a test
+
+OPERATOR_MOCK_MAPPING = {
+    # CWE-89: SQL Injection
+    # MockDatabase.SECURITY_ATTRS = {"last_query", "last_params", "query_count"}
+    "PSQLI": {"db": {"last_query", "last_params", "query_count"}},
+
+    # CWE-78: Command Injection
+    # MockSubprocess.SECURITY_ATTRS = {"last_shell", "last_command", "injection_detected", "dangerous_command_detected"}
+    "CMDINJECT": {"subprocess": {"last_shell", "last_command", "injection_detected", "dangerous_command_detected"}},
+
+    # CWE-22: Path Traversal
+    # MockFileSystem.SECURITY_ATTRS = {"last_path", "base_dir"}
+    "PATHCONCAT": {"fs": {"last_path", "base_dir"}},
+
+    # CWE-327/328: Weak Cryptography
+    # MockCrypto.SECURITY_ATTRS = {"last_algorithm", "weak_algorithm_used", "strong_algorithm_used", "algorithms_used"}
+    "WEAKCRYPTO": {"crypto": {"last_algorithm", "weak_algorithm_used", "strong_algorithm_used", "algorithms_used"}},
+
+    # CWE-502: Insecure Deserialization
+    # MockPickle.SECURITY_ATTRS = {"unsafe_load_called", "last_data", "load_count"}
+    # MockYAML.SECURITY_ATTRS = {"unsafe_load_called", "safe_loader_used", "last_data", "load_count"}
+    "DESERIAL": {
+        "pickle": {"last_data", "unsafe_load_called", "load_count"},
+        "yaml": {"last_data", "unsafe_load_called", "safe_loader_used", "load_count"},
+    },
+
+    # CWE-918: SSRF
+    # MockHTTPClient.SECURITY_ATTRS = {"last_url", "ssrf_attempted", "last_method"}
+    "SSRF": {"http": {"last_url", "ssrf_attempted", "last_method"}},
+
+    # CWE-611: XXE
+    # MockXMLParser.SECURITY_ATTRS = {"last_xml", "external_entities_resolved", "dtd_processed"}
+    "XXE": {"xml": {"last_xml", "external_entities_resolved", "dtd_processed"}},
+
+    # CWE-798: Hardcoded Credentials
+    # MockEnvironment.SECURITY_ATTRS = {"last_key", "sensitive_accessed", "access_log"}
+    "HARDCODE": {"env": {"last_key", "sensitive_accessed", "access_log"}},
+
+    # CWE-287/306: Authentication Removal
+    # MockAuthenticator.SECURITY_ATTRS = {"last_username", "last_password", "last_token", "auth_attempts", "failed_attempts"}
+    "RMAUTH": {"auth": {"last_username", "last_password", "last_token", "auth_attempts", "failed_attempts"}},
+
+    # CWE-94: Code Injection (SSTI/eval)
+    # MockEval.SECURITY_ATTRS = {"last_code", "unsafe_eval_called", "unsafe_exec_called", "injection_detected"}
+    "SSTI": {"eval": {"last_code", "unsafe_eval_called", "unsafe_exec_called", "injection_detected"}},
+    "EVALINJECT": {"eval": {"last_code", "unsafe_eval_called", "unsafe_exec_called", "injection_detected"}},
+
+    # Operators without dedicated mock state (rely on keyword matching only)
+    "RVALID": {},
+    "INPUTVAL": {},
+    "SUBDOMAIN_SPOOF": {},
+    "RHTTPO": {},
+    "RENCRYPT": {},
+    "IDOR": {},
+    "CORS_WEAK": {},
+    "CSRF_REMOVE": {},
+    "WEAKRANDOM": {},
+}
+
+
+# =============================================================================
+# Layer 1.25: Operator-Specific Attack Payloads for Bare Assertion Classification
+# =============================================================================
+# When a test uses a bare assertion (no descriptive message), pytest shows the
+# actual values in the error repr. If the assertion checks for attack payload
+# presence/absence in output, the payload appears in the error message.
+# This layer catches those cases when Layer 1 keyword matching doesn't fire.
+#
+# Example: assert "<script>" not in result
+# Error:   AssertionError: assert '<script>' not in '<div><script>alert(1)</script></div>'
+#          ↑ Contains "<script>" - this is a legitimate XSS check
+#
+# These payloads are operator-specific to prevent coincidental matches
+# (e.g., "<script>" in a CWE-327 crypto test error would be coincidental)
+
+OPERATOR_ATTACK_PAYLOADS = {
+    # CWE-79: XSS - Check for script injection in output
+    "RVALID": [
+        "<script", "</script>", "javascript:", "onerror=", "onload=",
+        "onclick=", "onmouseover=", "alert(", "document.cookie",
+        "<img src=", "<svg onload",
+    ],
+    # CWE-22: Path Traversal - Check for directory escape in paths
+    "PATHCONCAT": [
+        "../", "..\\", "/etc/passwd", "/etc/shadow", "..%2f",
+        "%2e%2e/", "....//", "/proc/self",
+    ],
+    # CWE-89: SQL Injection - Check for SQL attack patterns in queries
+    "PSQLI": [
+        "' OR '1'='1", "'; DROP", "UNION SELECT", "1=1", "' OR ''='",
+        "'; DELETE", "' OR 1=1--", "admin'--",
+    ],
+    # CWE-78: Command Injection - Check for shell metacharacters
+    "CMDINJECT": [
+        "; rm", "&& cat", "| ls", "; cat /etc", "$(", "`whoami`",
+        "| nc ", "; wget", "&& wget", "; curl",
+    ],
+    # CWE-918: SSRF - Check for internal/metadata URLs
+    "SSRF": [
+        "127.0.0.1", "169.254.169.254", "localhost", "0.0.0.0",
+        "metadata.google", "169.254.", "[::1]", "file://",
+    ],
+    # CWE-502: Insecure Deserialization - Check for serialization markers
+    "DESERIAL": [
+        "__reduce__", "pickle.loads", "yaml.load", "!!python",
+        "yaml.unsafe_load", "marshal.loads",
+    ],
+    # CWE-611: XXE - Check for entity injection
+    "XXE": [
+        "<!ENTITY", "<!DOCTYPE", "SYSTEM", "file:///",
+        "expect://", "php://",
+    ],
+    # CWE-798: Hardcoded Credentials - Check for credential patterns
+    "HARDCODE": [
+        "password123", "admin123", "secret123", "api_key=",
+        "AWS_SECRET", "PRIVATE_KEY",
+    ],
+    # CWE-20: Input Validation / Subdomain Spoofing
+    "SUBDOMAIN_SPOOF": [
+        "attacker.com", "evil.com", ".attacker.", "attack-",
+        "@evil", "#evil",
+    ],
+    "INPUTVAL": [
+        "attacker.com", "evil.com", ".attacker.",
+    ],
+    # CWE-94: Code Injection
+    "SSTI": [
+        "{{", "}}", "__class__", "__mro__", "__globals__",
+        "__builtins__", "config.items",
+    ],
+    "EVALINJECT": [
+        "__import__", "exec(", "eval(", "compile(",
+        "os.system", "subprocess",
+    ],
+}
+
+
+def classify_kill(error: str, operator: str = None, mock_access: dict = None) -> str:
     """
-    Classify the type of kill based on the error message.
+    Classify the type of kill based on the error message, mutation operator,
+    and mock state observability.
+
+    Classification Layers (in order):
+    - Layer 0: Crash detection (syntax/import errors)
+    - Layer 0.5: Functional detection (pytest.raises failures - "DID NOT RAISE")
+    - Layer 1.5: Mock-state observability (if test accessed security-relevant mock attrs)
+    - Layer 1: Operator-aware keyword matching (test author described security property)
+    - Layer 1.25: Attack payload detection (bare assertion contains attack payload in repr)
+
+    Layer 1 fires before 1.25 because explicit security descriptions are stronger
+    evidence of security awareness than payload presence in assertion repr.
 
     Kill types:
-    - semantic: AssertionError with security-related terms (validates security property)
-    - assertion_incidental: AssertionError without security terms (caught change incidentally)
-    - crash: ImportError, TypeError, NameError, SyntaxError, AttributeError (code structure issue)
+    - semantic: AssertionError with security awareness (via mock, keyword, or payload)
+    - functional: Test expected specific exception that wasn't raised (behavioral detection)
+    - assertion_incidental: AssertionError without security awareness
+    - crash: ImportError, TypeError, NameError, SyntaxError, AttributeError
     - other: Any other exception
 
     Args:
         error: The error message from the failing test
+        operator: The mutation operator that produced this mutant (e.g., "PSQLI")
+        mock_access: Dict mapping mock names to list of accessed security attrs
 
     Returns:
-        One of: "semantic", "assertion_incidental", "crash", "other"
+        One of: "semantic", "functional", "assertion_incidental", "crash", "other"
     """
     if not error:
         return "other"
 
     error_lower = error.lower()
 
-    # Check for crash types first (code structure issues)
-    crash_types = ["ImportError", "TypeError", "NameError", "SyntaxError",
-                   "AttributeError", "IndentationError", "ModuleNotFoundError"]
+    # --- Layer 0: Crash detection ---
+    crash_types = [
+        "ImportError", "TypeError", "NameError", "SyntaxError",
+        "AttributeError", "IndentationError", "ModuleNotFoundError",
+    ]
     if any(ct in error for ct in crash_types):
         return "crash"
 
@@ -129,13 +449,61 @@ def classify_kill(error: str) -> str:
     if any(ind in error_lower for ind in syntax_indicators):
         return "crash"
 
-    # Check for assertion errors
+    # --- Layer 0.5: Functional detection (pytest.raises failures) ---
+    # "DID NOT RAISE <class 'ValueError'>" indicates test expected an exception
+    # that the mutant didn't raise - this is a legitimate behavioral/functional detection
+    if "did not raise" in error_lower:
+        # Check if the expected exception was security-related
+        security_exceptions = ["valueerror", "securityerror", "permissionerror",
+                               "invalidinputerror", "validationerror"]
+        if any(exc in error_lower for exc in security_exceptions):
+            return "functional"
+        # Even non-security exceptions are functional detections
+        return "functional"
+
+    # --- Assertion classification ---
     if "AssertionError" in error or "Assertion failed" in error:
-        # Check if assertion references a security property
-        if any(term in error_lower for term in SECURITY_INDICATORS):
-            return "semantic"
-        else:
-            return "assertion_incidental"
+        # --- Layer 1.5: Mock-state observability check ---
+        if mock_access and operator:
+            relevant_mocks = OPERATOR_MOCK_MAPPING.get(operator, {})
+            for mock_name, required_attrs in relevant_mocks.items():
+                accessed = set(mock_access.get(mock_name, []))
+                if accessed & required_attrs:  # intersection - any overlap
+                    return "semantic"
+
+        # --- Layer 1: Keyword matching ---
+        # Get operator-specific patterns
+        patterns = OPERATOR_SECURITY_PATTERNS.get(operator, [])
+
+        # Check for operator-relevant security terms first
+        for pattern in patterns:
+            if re.search(pattern, error_lower):
+                return "semantic"
+
+        # Always check generic patterns as fallback (even when operator is known)
+        # This catches cases where the error matches a generic security term
+        # that isn't in the operator-specific list
+        for term in GENERIC_SECURITY_PATTERNS:
+            if term in error_lower:
+                return "semantic"
+
+        # --- Layer 1.25: Attack payload detection in assertion repr ---
+        # When a bare assertion like `assert "<script>" not in result` fails,
+        # pytest shows the actual values in the error repr. If the assertion
+        # checks for attack payload presence/absence, the payload appears in
+        # the error message. This is a legitimate security test, even without
+        # an explicit descriptive message.
+        #
+        # Example error: AssertionError: assert '<script>' not in '<div><script>...'
+        #
+        # Payloads are operator-specific to prevent coincidental matches.
+        if operator:
+            payloads = OPERATOR_ATTACK_PAYLOADS.get(operator, [])
+            for payload in payloads:
+                if payload.lower() in error_lower:
+                    return "semantic"
+
+        return "assertion_incidental"
 
     return "other"
 
@@ -273,13 +641,26 @@ def evaluate_generated_tests(
     result["metrics"]["mutants_killed"] = 0
 
     try:
-        # Note: operators already passed to MutationEngine at function start
-        # Don't pass CWE here - it would override the sample's operators with CWE_OPERATOR_MAP lookup
-        mutants = engine.generate_mutants(
-            sample["secure_code"],
-            cwe=None,  # Engine already has sample-specific operators
-            max_mutants=max_mutants,
-        ).mutants
+        # Use pre-generated mutants if available, otherwise generate on-the-fly
+        if "mutants" in sample and sample["mutants"]:
+            from evaluation.mutation_engine import Mutant
+            mutants = [
+                Mutant(
+                    id=m["id"],
+                    original_code=sample["secure_code"],
+                    mutated_code=m["mutated_code"],
+                    operator=m["operator"],
+                    description=m["description"],
+                )
+                for m in sample["mutants"]
+            ]
+        else:
+            # Fallback: generate at evaluation time (backward compatibility)
+            mutants = engine.generate_mutants(
+                sample["secure_code"],
+                cwe=None,  # Engine already has sample-specific operators
+                max_mutants=max_mutants,
+            ).mutants
 
         killed = 0
         for mutant in mutants:
@@ -288,6 +669,8 @@ def evaluate_generated_tests(
 
             kill_type = None
             kill_reason = None
+            mock_access = None
+            classification_layer = None
 
             if is_killed:
                 killed += 1
@@ -295,11 +678,35 @@ def evaluate_generated_tests(
                 for test_result in mutant_result.tests:
                     if not test_result.passed and test_result.error:
                         kill_reason = test_result.error
-                        kill_type = classify_kill(kill_reason)
+                        mock_access = test_result.mock_security_access
+                        # Pass operator and mock_access for observability-aware classification
+                        kill_type = classify_kill(
+                            kill_reason,
+                            operator=mutant.operator,
+                            mock_access=mock_access
+                        )
+                        # Determine which layer triggered the classification
+                        if kill_type == "semantic" and mock_access:
+                            # Check if mock observability triggered it
+                            relevant_mocks = OPERATOR_MOCK_MAPPING.get(mutant.operator, {})
+                            for mock_name, required_attrs in relevant_mocks.items():
+                                accessed = set(mock_access.get(mock_name, []))
+                                if accessed & required_attrs:
+                                    classification_layer = "mock_observability"
+                                    break
+                            if classification_layer is None:
+                                classification_layer = "keyword"
+                        elif kill_type == "semantic":
+                            classification_layer = "keyword"
+                        elif kill_type == "crash":
+                            classification_layer = "crash"
+                        else:
+                            classification_layer = "none"
                         break
                 # Default if no error found
                 if kill_type is None:
                     kill_type = "other"
+                    classification_layer = "none"
 
             # Collect per-test results for detailed logging
             test_results = []
@@ -316,6 +723,8 @@ def evaluate_generated_tests(
                 "killed": is_killed,
                 "kill_type": kill_type,
                 "kill_reason": kill_reason,
+                "classification_layer": classification_layer,  # NEW: Which layer triggered classification
+                "mock_security_access": mock_access,  # NEW: What mock attrs were accessed
                 "description": mutant.description,
                 "mutated_code": mutant.mutated_code,  # Full mutant code for analysis
                 "test_results": test_results,  # Per-test pass/fail breakdown
@@ -346,9 +755,10 @@ def evaluate_generated_tests(
 def evaluate_model(
     model_name: str,
     benchmark: List[Dict],
-    prompt_template: str,
+    prompt_template: str = None,
     llm_client: Any = None,
     output_dir: Optional[str] = None,
+    use_unified_prompts: bool = True,
 ) -> Dict[str, Any]:
     """
     Evaluate an LLM on the full benchmark.
@@ -356,9 +766,11 @@ def evaluate_model(
     Args:
         model_name: Name of the model to evaluate
         benchmark: List of benchmark samples
-        prompt_template: Template for generating prompts
+        prompt_template: Legacy template for generating prompts (deprecated)
         llm_client: Client for calling the LLM API
         output_dir: Directory to save results
+        use_unified_prompts: If True, use format_test_generation_prompt from prompts module
+                            (recommended for consistency with baselines)
 
     Returns:
         Dict with summary and detailed results
@@ -370,13 +782,24 @@ def evaluate_model(
     for i, sample in enumerate(benchmark):
         print(f"Evaluating sample {i+1}/{len(benchmark)}: {sample['id']}")
 
-        # Generate prompt
-        prompt = prompt_template.format(
-            cwe=sample["cwe"],
-            cwe_name=sample.get("cwe_name", sample["cwe"]),
-            code=sample["secure_code"],
-            entry_point=sample.get("entry_point", "function"),
-        )
+        # Generate prompt - prefer unified prompts module for consistency
+        if use_unified_prompts:
+            prompt = format_test_generation_prompt(
+                code=sample["secure_code"],
+                cwe=sample["cwe"],
+                cwe_name=sample.get("cwe_name", sample["cwe"]),
+                include_mock_env=True,
+            )
+        elif prompt_template:
+            # Legacy path - use provided template
+            prompt = prompt_template.format(
+                cwe=sample["cwe"],
+                cwe_name=sample.get("cwe_name", sample["cwe"]),
+                code=sample["secure_code"],
+                entry_point=sample.get("entry_point", "function"),
+            )
+        else:
+            raise ValueError("Either prompt_template or use_unified_prompts=True required")
 
         # Call LLM (if client provided)
         if llm_client:
@@ -422,6 +845,7 @@ def evaluate_model(
     summary["security_precision"] = security_precision.get("security_precision")
 
     output = {
+        "version_info": get_version_info(),
         "summary": summary,
         "by_cwe": by_cwe,
         "by_difficulty": by_difficulty,
@@ -611,6 +1035,7 @@ def evaluate_multimodal(
     exec_summary["security_precision"] = security_precision.get("security_precision")
 
     output = {
+        "version_info": get_version_info(),
         "evaluation_mode": "multimodal",
         "weights": evaluator.weights,
         "multimodal_summary": aggregate,
@@ -648,7 +1073,9 @@ def evaluate_multimodal(
     return output
 
 
-# Default prompt template
+# Legacy prompt template - kept for backwards compatibility
+# For new evaluations, use format_test_generation_prompt() from evaluation.prompts
+# which includes mock environment docs and CWE-specific attack vectors
 DEFAULT_PROMPT_TEMPLATE = """
 Generate security tests for the following Python function to detect {cwe_name} ({cwe}) vulnerabilities.
 
@@ -675,6 +1102,11 @@ Output only the Python test code, no explanations.
 def main():
     parser = argparse.ArgumentParser(
         description="Evaluate security tests on SecMutBench"
+    )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Show version information and exit"
     )
     parser.add_argument(
         "--benchmark",
@@ -728,6 +1160,12 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Handle --version flag
+    if args.version:
+        from evaluation.version import format_version_string
+        print(format_version_string())
+        return
 
     # Load benchmark
     print("Loading benchmark...")
@@ -796,8 +1234,9 @@ def main():
         results = evaluate_model(
             args.model,
             benchmark,
-            DEFAULT_PROMPT_TEMPLATE,
+            prompt_template=None,  # Use unified prompts from prompts module
             output_dir=args.output,
+            use_unified_prompts=True,
         )
         # Print summary
         summary = results["summary"]
