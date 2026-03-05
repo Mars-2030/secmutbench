@@ -504,6 +504,166 @@ class OWASPPayloadHandler:
         return sorted(payloads.keys())
 
 
+class SecCodePLTHandler(BaseSourceHandler):
+    """
+    Handler for SecCodePLT dataset (Virtue-AI-HUB/SecCodePLT).
+
+    Local parquet file: data/raw/insecure_coding-00000-of-00001.parquet
+    Contains: 1,345 samples across 27 CWEs with both vulnerable and patched code.
+
+    Phase 1: Only loads samples for CWEs that overlap with existing SecMutBench
+    mutation operators (9 CWEs). Filters out samples requiring external dependencies.
+    """
+
+    PARQUET_FILENAME = "insecure_coding-00000-of-00001.parquet"
+
+    # Expanded: all CWEs where we have mutation operators (49 total)
+    SUPPORTED_CWES = {
+        # Original
+        "22", "78", "79", "94", "327", "352", "502", "611", "918",
+        # Expanded coverage
+        "20", "73", "77", "89", "90", "95", "113", "117",
+        "200", "209", "215", "259", "284", "287", "295", "297", "306",
+        "311", "319", "326", "328", "330", "331", "338", "346",
+        "400", "434", "521", "522", "601", "639", "643",
+        "776", "798", "862", "863", "942", "1004", "1333", "1336",
+    }
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        self.cache_dir = Path(cache_dir) if cache_dir else Path("data/raw")
+        self.parquet_path = self.cache_dir / self.PARQUET_FILENAME
+        self._samples: Optional[List[ExternalSample]] = None
+
+    def _parse_field(self, value):
+        """Parse a field that may be a dict, string repr of dict, or JSON."""
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except (json.JSONDecodeError, ValueError):
+                try:
+                    return eval(value)
+                except Exception:
+                    return {}
+        return {}
+
+    def _has_external_deps(self, install_requires) -> bool:
+        """Check if sample requires external dependencies."""
+        if install_requires is None:
+            return False
+        if isinstance(install_requires, str):
+            try:
+                install_requires = eval(install_requires)
+            except Exception:
+                return False
+        # Handle numpy arrays and lists
+        try:
+            return len(install_requires) > 0
+        except (TypeError, ValueError):
+            return False
+
+    def load_samples(self) -> List[ExternalSample]:
+        """Load SecCodePLT samples from local parquet file."""
+        if self._samples is not None:
+            return self._samples
+
+        if not self.parquet_path.exists():
+            print(f"SecCodePLT parquet not found at {self.parquet_path}")
+            self._samples = []
+            return self._samples
+
+        try:
+            import pandas as pd
+        except ImportError:
+            print("Please install pandas: pip install pandas pyarrow")
+            self._samples = []
+            return self._samples
+
+        df = pd.read_parquet(self.parquet_path)
+        print(f"Loading SecCodePLT: {len(df)} total rows")
+
+        self._samples = []
+        skipped_cwe = 0
+        skipped_deps = 0
+
+        for _, row in df.iterrows():
+            cwe_id = str(row.get("CWE_ID", ""))
+
+            # Phase 1: skip unsupported CWEs
+            if cwe_id not in self.SUPPORTED_CWES:
+                skipped_cwe += 1
+                continue
+
+            # Skip samples with external dependencies
+            if self._has_external_deps(row.get("install_requires")):
+                skipped_deps += 1
+                continue
+
+            cwe = f"CWE-{cwe_id}"
+            original_id = str(row.get("id", ""))
+
+            # Parse nested fields
+            ground_truth = self._parse_field(row.get("ground_truth", {}))
+            task_desc = self._parse_field(row.get("task_description", {}))
+            unittest_data = self._parse_field(row.get("unittest", {}))
+
+            # Assemble full code from fragments
+            code_before = ground_truth.get("code_before", "")
+            code_after = ground_truth.get("code_after", "")
+            vulnerable_code = ground_truth.get("vulnerable_code", "")
+            patched_code = ground_truth.get("patched_code", "")
+
+            if not vulnerable_code or not patched_code:
+                continue
+
+            insecure_code = code_before + vulnerable_code + code_after
+            secure_code = code_before + patched_code + code_after
+
+            # Setup code (imports, global variables the function depends on)
+            setup_code = unittest_data.get("setup", "")
+            function_name = task_desc.get("function_name", "")
+            description = task_desc.get("description", "")
+            security_policy = task_desc.get("security_policy", "")
+
+            # Build prompt from task description
+            prompt = description if description else f"Implement {function_name}"
+
+            self._samples.append(ExternalSample(
+                id=hashlib.md5(f"seccodeplt_{original_id}".encode()).hexdigest()[:12],
+                cwe=cwe,
+                cwe_name=CWE_NAMES.get(cwe, "Unknown"),
+                source="SecCodePLT",
+                original_id=original_id,
+                prompt=prompt,
+                code=insecure_code,
+                language="python",
+                metadata={
+                    "secure_code": secure_code,
+                    "insecure_code": insecure_code,
+                    "setup_code": setup_code,
+                    "function_name": function_name,
+                    "security_policy": security_policy,
+                    "rule": str(row.get("rule", "")),
+                    "use_rule": bool(row.get("use_rule", False)),
+                },
+            ))
+
+        print(f"  Loaded {len(self._samples)} samples (skipped {skipped_cwe} unsupported CWEs, {skipped_deps} with external deps)")
+        return self._samples
+
+    def extract_by_cwe(self, cwe_id: str) -> List[ExternalSample]:
+        """Extract samples for a specific CWE."""
+        cwe_normalized = normalize_cwe(cwe_id)
+        all_samples = self.load_samples()
+        return [s for s in all_samples if s.cwe == cwe_normalized]
+
+    def get_available_cwes(self) -> List[str]:
+        """Get list of CWEs available in this dataset."""
+        all_samples = self.load_samples()
+        return sorted(set(s.cwe for s in all_samples))
+
+
 class CodeQLHandler:
     """
     Handler for CodeQL query examples.

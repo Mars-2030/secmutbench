@@ -110,13 +110,33 @@ class PSQLI(SecurityMutationOperator):
             params = [p.strip() for p in params_str.split(',')]
 
             if '?' in query:
-                # Replace ? with f-string interpolation
-                new_query = query
+                # Variant 1: f-string interpolation
+                new_query_fstr = query
                 for param in params:
-                    new_query = new_query.replace('?', '{' + param + '}', 1)
+                    new_query_fstr = new_query_fstr.replace('?', '{' + param + '}', 1)
+                mutant = code[:match.start()] + f'{match.group(1)}f"{new_query_fstr}")' + code[match.end():]
+                mutants.append((mutant, f"[Variant 1] f-string: {query[:30]}..."))
 
-                mutant = code[:match.start()] + f'{match.group(1)}f"{new_query}")' + code[match.end():]
-                mutants.append((mutant, f"Converted parameterized query to f-string at position {match.start()}"))
+                # Variant 2: String concatenation
+                new_query_concat = query
+                for param in params:
+                    new_query_concat = new_query_concat.replace('?', f'" + str({param}) + "', 1)
+                mutant2 = code[:match.start()] + f'{match.group(1)}"{new_query_concat}")' + code[match.end():]
+                mutants.append((mutant2, f"[Variant 2] Concatenation: {query[:30]}..."))
+
+                # Variant 3: % formatting
+                new_query_pct = query.replace('?', '%s')
+                param_tuple = ', '.join(params)
+                mutant3 = code[:match.start()] + f'{match.group(1)}"{new_query_pct}" % ({param_tuple},))' + code[match.end():]
+                mutants.append((mutant3, f"[Variant 3] % formatting: {query[:30]}..."))
+
+                # Variant 4: .format() method
+                new_query_fmt = query
+                for i, param in enumerate(params):
+                    new_query_fmt = new_query_fmt.replace('?', '{}', 1)
+                param_args = ', '.join(params)
+                mutant4 = code[:match.start()] + f'{match.group(1)}"{new_query_fmt}".format({param_args}))' + code[match.end():]
+                mutants.append((mutant4, f"[Variant 4] .format(): {query[:30]}..."))
 
         # Pattern 2: %s placeholders
         pattern2 = r'(\.execute\s*\(\s*)["\']([^"\']*%s[^"\']*)["\'],\s*\(([^)]+)\)\s*\)'
@@ -127,12 +147,25 @@ class PSQLI(SecurityMutationOperator):
             params_str = match.group(3)
             params = [p.strip() for p in params_str.split(',')]
 
-            new_query = query
+            # Variant 1: f-string interpolation
+            new_query_fstr = query
             for param in params:
-                new_query = new_query.replace('%s', '{' + param + '}', 1)
+                new_query_fstr = new_query_fstr.replace('%s', '{' + param + '}', 1)
+            mutant = code[:match.start()] + f'{match.group(1)}f"{new_query_fstr}")' + code[match.end():]
+            mutants.append((mutant, f"[Variant 1] f-string from %s: {query[:30]}..."))
 
-            mutant = code[:match.start()] + f'{match.group(1)}f"{new_query}")' + code[match.end():]
-            mutants.append((mutant, f"Converted %s parameterized query to f-string at position {match.start()}"))
+            # Variant 2: String concatenation
+            new_query_concat = query
+            for param in params:
+                new_query_concat = new_query_concat.replace('%s', f'" + str({param}) + "', 1)
+            mutant2 = code[:match.start()] + f'{match.group(1)}"{new_query_concat}")' + code[match.end():]
+            mutants.append((mutant2, f"[Variant 2] Concatenation from %s: {query[:30]}..."))
+
+            # Variant 3: .format() method
+            new_query_fmt = query.replace('%s', '{}')
+            param_args = ', '.join(params)
+            mutant3 = code[:match.start()] + f'{match.group(1)}"{new_query_fmt}".format({param_args}))' + code[match.end():]
+            mutants.append((mutant3, f"[Variant 3] .format() from %s: {query[:30]}..."))
 
         # If no regex matches, try AST-based mutation
         if not mutants:
@@ -143,7 +176,6 @@ class PSQLI(SecurityMutationOperator):
     def _ast_mutate(self, code: str) -> List[Tuple[str, str]]:
         """AST-based mutation for more complex cases including variable-based queries"""
         mutants = []
-        lines = code.split('\n')
 
         # Pattern: query = "SELECT ... WHERE x = ?" then db.execute(query, (param,))
         # Find query assignments with placeholders
@@ -162,27 +194,58 @@ class PSQLI(SecurityMutationOperator):
                 if em.group(1) == query_var:
                     params = [p.strip() for p in em.group(2).split(',')]
 
-                    # Create f-string version
-                    new_query = query_str
+                    # Variant 1: f-string interpolation
+                    new_query_fstr = query_str
                     for param in params:
-                        new_query = new_query.replace('?', '{' + param + '}', 1)
-
-                    # Replace query assignment with f-string
-                    new_assignment = f'{query_var} = f"{new_query}"'
+                        new_query_fstr = new_query_fstr.replace('?', '{' + param + '}', 1)
+                    new_assignment = f'{query_var} = f"{new_query_fstr}"'
                     mutant = code[:qm.start()] + new_assignment + code[qm.end():]
-
-                    # Also remove the params from execute call
-                    # Change execute(query, (param,)) to execute(query)
                     mutant = re.sub(
                         rf'\.execute\s*\(\s*{query_var}\s*,\s*\([^)]+\)\s*\)',
                         f'.execute({query_var})',
                         mutant
                     )
+                    mutants.append((mutant, f"[Variant 1] f-string: query '{query_var}'"))
 
-                    mutants.append((mutant, f"Converted parameterized query '{query_var}' to f-string SQL injection"))
+                    # Variant 2: String concatenation
+                    new_query_concat = query_str
+                    for param in params:
+                        new_query_concat = new_query_concat.replace('?', f'" + str({param}) + "', 1)
+                    new_assignment2 = f'{query_var} = "{new_query_concat}"'
+                    mutant2 = code[:qm.start()] + new_assignment2 + code[qm.end():]
+                    mutant2 = re.sub(
+                        rf'\.execute\s*\(\s*{query_var}\s*,\s*\([^)]+\)\s*\)',
+                        f'.execute({query_var})',
+                        mutant2
+                    )
+                    mutants.append((mutant2, f"[Variant 2] Concatenation: query '{query_var}'"))
+
+                    # Variant 3: % formatting
+                    new_query_pct = query_str.replace('?', '%s')
+                    param_tuple = ', '.join(params)
+                    new_assignment3 = f'{query_var} = "{new_query_pct}" % ({param_tuple})'
+                    mutant3 = code[:qm.start()] + new_assignment3 + code[qm.end():]
+                    mutant3 = re.sub(
+                        rf'\.execute\s*\(\s*{query_var}\s*,\s*\([^)]+\)\s*\)',
+                        f'.execute({query_var})',
+                        mutant3
+                    )
+                    mutants.append((mutant3, f"[Variant 3] % format: query '{query_var}'"))
+
+                    # Variant 4: .format() method
+                    new_query_fmt = query_str.replace('?', '{}')
+                    param_args = ', '.join(params)
+                    new_assignment4 = f'{query_var} = "{new_query_fmt}".format({param_args})'
+                    mutant4 = code[:qm.start()] + new_assignment4 + code[qm.end():]
+                    mutant4 = re.sub(
+                        rf'\.execute\s*\(\s*{query_var}\s*,\s*\([^)]+\)\s*\)',
+                        f'.execute({query_var})',
+                        mutant4
+                    )
+                    mutants.append((mutant4, f"[Variant 4] .format(): query '{query_var}'"))
                     break
 
-        # Also handle %s placeholders
+        # Also handle %s placeholders with multiple variants
         query_pattern_pct = r'(\w+)\s*=\s*["\']([^"\']*%s[^"\']*)["\']'
         query_matches_pct = list(re.finditer(query_pattern_pct, code))
 
@@ -194,19 +257,43 @@ class PSQLI(SecurityMutationOperator):
                 if em.group(1) == query_var:
                     params = [p.strip() for p in em.group(2).split(',')]
 
-                    new_query = query_str
+                    # Variant 1: f-string interpolation
+                    new_query_fstr = query_str
                     for param in params:
-                        new_query = new_query.replace('%s', '{' + param + '}', 1)
-
-                    new_assignment = f'{query_var} = f"{new_query}"'
+                        new_query_fstr = new_query_fstr.replace('%s', '{' + param + '}', 1)
+                    new_assignment = f'{query_var} = f"{new_query_fstr}"'
                     mutant = code[:qm.start()] + new_assignment + code[qm.end():]
                     mutant = re.sub(
                         rf'\.execute\s*\(\s*{query_var}\s*,\s*\([^)]+\)\s*\)',
                         f'.execute({query_var})',
                         mutant
                     )
+                    mutants.append((mutant, f"[Variant 1] f-string from %s: query '{query_var}'"))
 
-                    mutants.append((mutant, f"Converted %s parameterized query '{query_var}' to f-string SQL injection"))
+                    # Variant 2: String concatenation
+                    new_query_concat = query_str
+                    for param in params:
+                        new_query_concat = new_query_concat.replace('%s', f'" + str({param}) + "', 1)
+                    new_assignment2 = f'{query_var} = "{new_query_concat}"'
+                    mutant2 = code[:qm.start()] + new_assignment2 + code[qm.end():]
+                    mutant2 = re.sub(
+                        rf'\.execute\s*\(\s*{query_var}\s*,\s*\([^)]+\)\s*\)',
+                        f'.execute({query_var})',
+                        mutant2
+                    )
+                    mutants.append((mutant2, f"[Variant 2] Concatenation from %s: query '{query_var}'"))
+
+                    # Variant 3: .format() method
+                    new_query_fmt = query_str.replace('%s', '{}')
+                    param_args = ', '.join(params)
+                    new_assignment3 = f'{query_var} = "{new_query_fmt}".format({param_args})'
+                    mutant3 = code[:qm.start()] + new_assignment3 + code[qm.end():]
+                    mutant3 = re.sub(
+                        rf'\.execute\s*\(\s*{query_var}\s*,\s*\([^)]+\)\s*\)',
+                        f'.execute({query_var})',
+                        mutant3
+                    )
+                    mutants.append((mutant3, f"[Variant 3] .format() from %s: query '{query_var}'"))
                     break
 
         return mutants
@@ -442,6 +529,116 @@ class INPUTVAL(SecurityMutationOperator):
         return mutants
 
 
+class SUBDOMAIN_SPOOF(SecurityMutationOperator):
+    """
+    Remove Subdomain Validation (SUBDOMAIN_SPOOF)
+
+    Removes or weakens domain/subdomain validation checks, enabling
+    subdomain spoofing attacks.
+
+    Example:
+        if not url.endswith('.example.com'):
+            raise ValueError("Invalid domain")
+        → (removed check, accepts any URL)
+
+    Difficulty Levels:
+    - Easy: Remove endswith('.domain.com') check
+    - Medium: Remove parsed.netloc validation
+    - Hard: Remove multi-condition domain validation
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="SUBDOMAIN_SPOOF",
+            description="Remove subdomain/domain validation for URL spoofing",
+            target_cwes=["CWE-20", "CWE-918"]
+        )
+        self.domain_validators = [
+            'endswith', 'startswith', 'netloc', 'hostname',
+            'allowed_domains', 'valid_domains', 'trusted_domains',
+            'domain_whitelist', 'check_domain', 'validate_domain',
+        ]
+
+    def applies_to(self, code: str) -> bool:
+        code_lower = code.lower()
+        # Check for domain validation patterns
+        if any(v in code_lower for v in self.domain_validators):
+            return True
+        # Check for URL parsing with domain checks
+        if 'urlparse' in code_lower and ('netloc' in code_lower or 'hostname' in code_lower):
+            return True
+        # Check for domain suffix validation
+        if re.search(r'\.endswith\s*\([^)]*\.(com|org|net|io)', code):
+            return True
+        return False
+
+    def mutate(self, code: str) -> List[Tuple[str, str]]:
+        mutants = []
+
+        # === EASY: Remove endswith('.domain.com') check ===
+        # Pattern: if not url.endswith('.example.com'):
+        endswith_pattern = r'if\s+not\s+[\w.]+\.endswith\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        matches = list(re.finditer(endswith_pattern, code))
+        for match in matches:
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "[Easy] Removed domain endswith() validation"))
+
+        # === EASY: Remove 'in allowed_domains' check ===
+        allowed_pattern = r'if\s+[\w.]+\s+not\s+in\s+(allowed_domains|valid_domains|trusted_domains|ALLOWED_DOMAINS)[^\n]*:\s*\n\s*(raise|return)[^\n]*\n'
+        matches = list(re.finditer(allowed_pattern, code, re.IGNORECASE))
+        for match in matches:
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "[Easy] Removed allowed_domains check"))
+
+        # === MEDIUM: Remove netloc validation ===
+        # Pattern: if parsed.netloc not in ALLOWED_HOSTS:
+        netloc_pattern = r'if\s+[\w.]+\.netloc\s+(not\s+in|!=)[^\n]+:\s*\n\s*(raise|return)[^\n]*\n'
+        matches = list(re.finditer(netloc_pattern, code))
+        for match in matches:
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "[Medium] Removed netloc domain validation"))
+
+        # === MEDIUM: Remove hostname check ===
+        hostname_pattern = r'if\s+[\w.]+\.hostname\s+(not\s+in|!=|not\s+endswith)[^\n]+:\s*\n\s*(raise|return)[^\n]*\n'
+        matches = list(re.finditer(hostname_pattern, code))
+        for match in matches:
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "[Medium] Removed hostname validation"))
+
+        # === MEDIUM: Replace strict domain check with permissive ===
+        # Pattern: if domain in url → if True (always allow)
+        domain_in_pattern = r'if\s+[\w.]+\s+in\s+[\w.]+\s*:'
+        matches = list(re.finditer(domain_in_pattern, code))
+        for match in matches:
+            mutant = code[:match.start()] + 'if True:' + code[match.end():]
+            mutants.append((mutant, "[Medium] Replaced domain check with True"))
+
+        # === HARD: Remove validate_domain function call ===
+        validate_pattern = r'if\s+not\s+(validate_domain|check_domain|is_valid_domain)\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        matches = list(re.finditer(validate_pattern, code, re.IGNORECASE))
+        for match in matches:
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "[Hard] Removed domain validation function"))
+
+        # === HARD: Replace domain validation function with True ===
+        for func in ['validate_domain', 'check_domain', 'is_valid_domain', 'is_trusted_domain']:
+            func_pattern = rf'{func}\s*\([^)]*\)'
+            matches = list(re.finditer(func_pattern, code, re.IGNORECASE))
+            for match in matches:
+                mutant = code[:match.start()] + 'True' + code[match.end():]
+                mutants.append((mutant, f"[Hard] Replaced {func}() with True"))
+
+        # === HARD: Remove compound domain validation ===
+        # Pattern: if not (domain.endswith('.example.com') or domain in trusted):
+        compound_pattern = r'if\s+not\s*\([^)]+endswith[^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        matches = list(re.finditer(compound_pattern, code))
+        for match in matches:
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "[Hard] Removed compound domain validation"))
+
+        return mutants
+
+
 class RHTTPO(SecurityMutationOperator):
     """
     Remove HttpOnly Flag (RHTTPO)
@@ -590,6 +787,13 @@ class HARDCODE(SecurityMutationOperator):
             'password', 'passwd', 'pwd', 'secret', 'api_key', 'apikey',
             'token', 'auth', 'credential', 'private_key', 'access_key',
         ]
+        # Multiple weak password variants for more mutants
+        self.weak_passwords = [
+            '"password"',      # OWASP top weak password
+            '"123456"',        # Most common password
+            '"admin"',         # Default credential
+            '"password123"',   # Slightly "complex" weak password
+        ]
         self.hardcoded_values = {
             'password': '"SuperSecret123!"',
             'user': '"admin"',
@@ -611,63 +815,70 @@ class HARDCODE(SecurityMutationOperator):
         mutants = []
 
         # === EASY: Replace os.environ["KEY"] bracket notation ===
+        # Generate MULTIPLE variants with different weak passwords
         env_bracket_pattern = r'os\.environ\s*\[\s*["\']([^"\']+)["\']\s*\]'
         matches = list(re.finditer(env_bracket_pattern, code))
         for match in matches:
             key = match.group(1).lower()
-            # Choose appropriate hardcoded value based on key
-            if 'password' in key or 'passwd' in key or 'secret' in key:
-                hc_value = self.hardcoded_values['password']
-            elif 'user' in key:
-                hc_value = self.hardcoded_values['user']
-            elif 'host' in key:
-                hc_value = self.hardcoded_values['host']
-            elif 'database' in key or 'db_name' in key:
-                hc_value = self.hardcoded_values['database']
+            # Generate variants with different weak passwords
+            if 'password' in key or 'passwd' in key or 'secret' in key or 'key' in key:
+                for i, weak_pwd in enumerate(self.weak_passwords):
+                    mutant = code[:match.start()] + weak_pwd + code[match.end():]
+                    mutants.append((mutant, f"[Easy-V{i+1}] Replaced os.environ['{match.group(1)}'] with {weak_pwd}"))
             else:
-                hc_value = self.hardcoded_values['default']
-            mutant = code[:match.start()] + hc_value + code[match.end():]
-            mutants.append((mutant, f"[Easy] Replaced os.environ['{match.group(1)}'] with hardcoded {hc_value}"))
+                # Single variant for non-sensitive keys
+                mutant = code[:match.start()] + self.hardcoded_values.get(key, '"admin123"') + code[match.end():]
+                mutants.append((mutant, f"[Easy] Replaced os.environ['{match.group(1)}'] with hardcoded value"))
 
-        # === MEDIUM: Replace os.environ.get() with hardcoded value ===
+        # === MEDIUM: Replace os.environ.get() with multiple weak password variants ===
         env_get_pattern = r'os\.environ\.get\s*\(\s*["\']([^"\']*)["\'](?:\s*,\s*[^)]+)?\s*\)'
         matches = list(re.finditer(env_get_pattern, code))
         for match in matches:
             key = match.group(1).lower()
-            if 'password' in key or 'secret' in key:
-                hc_value = self.hardcoded_values['password']
+            if 'password' in key or 'secret' in key or 'key' in key or 'token' in key:
+                for i, weak_pwd in enumerate(self.weak_passwords):
+                    mutant = code[:match.start()] + weak_pwd + code[match.end():]
+                    mutants.append((mutant, f"[Medium-V{i+1}] Replaced os.environ.get('{match.group(1)}') with {weak_pwd}"))
             else:
-                hc_value = self.hardcoded_values['default']
-            mutant = code[:match.start()] + hc_value + code[match.end():]
-            mutants.append((mutant, f"[Medium] Replaced os.environ.get('{match.group(1)}') with hardcoded value"))
+                mutant = code[:match.start()] + self.hardcoded_values['default'] + code[match.end():]
+                mutants.append((mutant, f"[Medium] Replaced os.environ.get('{match.group(1)}') with hardcoded value"))
 
-        # === MEDIUM: Replace os.getenv() with hardcoded value ===
+        # === MEDIUM: Replace os.getenv() with multiple variants ===
         getenv_pattern = r'os\.getenv\s*\(\s*["\']([^"\']*)["\'](?:\s*,\s*[^)]+)?\s*\)'
         matches = list(re.finditer(getenv_pattern, code))
         for match in matches:
-            mutant = code[:match.start()] + self.hardcoded_values['default'] + code[match.end():]
-            mutants.append((mutant, "[Medium] Replaced os.getenv() with hardcoded credential"))
+            key = match.group(1).lower()
+            if 'password' in key or 'secret' in key or 'key' in key:
+                for i, weak_pwd in enumerate(self.weak_passwords):
+                    mutant = code[:match.start()] + weak_pwd + code[match.end():]
+                    mutants.append((mutant, f"[Medium-V{i+1}] Replaced os.getenv('{match.group(1)}') with {weak_pwd}"))
+            else:
+                mutant = code[:match.start()] + self.hardcoded_values['default'] + code[match.end():]
+                mutants.append((mutant, "[Medium] Replaced os.getenv() with hardcoded credential"))
 
-        # === HARD: Replace get_secret() calls ===
+        # === HARD: Replace get_secret() calls with multiple variants ===
         secret_pattern = r'get_secret\s*\(\s*[^)]+\s*\)'
         matches = list(re.finditer(secret_pattern, code))
         for match in matches:
-            mutant = code[:match.start()] + self.hardcoded_values['password'] + code[match.end():]
-            mutants.append((mutant, "[Hard] Replaced get_secret() with hardcoded credential"))
+            for i, weak_pwd in enumerate(self.weak_passwords):
+                mutant = code[:match.start()] + weak_pwd + code[match.end():]
+                mutants.append((mutant, f"[Hard-V{i+1}] Replaced get_secret() with {weak_pwd}"))
 
-        # === HARD: Replace config.get() for secrets ===
+        # === HARD: Replace config.get() for secrets with multiple variants ===
         config_pattern = r'config\.get\s*\(\s*["\'](?:password|secret|api_key|token)["\'][^)]*\)'
         matches = list(re.finditer(config_pattern, code, re.IGNORECASE))
         for match in matches:
-            mutant = code[:match.start()] + self.hardcoded_values['password'] + code[match.end():]
-            mutants.append((mutant, "[Hard] Replaced config secret with hardcoded credential"))
+            for i, weak_pwd in enumerate(self.weak_passwords):
+                mutant = code[:match.start()] + weak_pwd + code[match.end():]
+                mutants.append((mutant, f"[Hard-V{i+1}] Replaced config secret with {weak_pwd}"))
 
-        # === HARD: Replace vault/secrets manager calls ===
+        # === HARD: Replace vault/secrets manager calls with multiple variants ===
         vault_pattern = r'(vault|secrets_manager|ssm|secretsmanager)\.get[_a-z]*\s*\([^)]+\)'
         matches = list(re.finditer(vault_pattern, code, re.IGNORECASE))
         for match in matches:
-            mutant = code[:match.start()] + self.hardcoded_values['password'] + code[match.end():]
-            mutants.append((mutant, "[Hard] Replaced secrets manager call with hardcoded credential"))
+            for i, weak_pwd in enumerate(self.weak_passwords):
+                mutant = code[:match.start()] + weak_pwd + code[match.end():]
+                mutants.append((mutant, f"[Hard-V{i+1}] Replaced secrets manager with {weak_pwd}"))
 
         # === NEW: Direct assignment pattern ===
         # Match: password = get_password() or secret = fetch_secret() etc.
@@ -943,7 +1154,7 @@ class CMDINJECT(SecurityMutationOperator):
         # Change shell=False to shell=True
         if 'shell=False' in code:
             mutant = code.replace('shell=False', 'shell=True')
-            mutants.append((mutant, "Changed shell=False to shell=True"))
+            mutants.append((mutant, "[Variant 1] Changed shell=False to shell=True"))
 
         # Add shell=True where missing
         patterns = [
@@ -960,9 +1171,9 @@ class CMDINJECT(SecurityMutationOperator):
         for pattern, replacement_func in patterns:
             for match in re.finditer(pattern, code):
                 mutant = code[:match.start()] + replacement_func(match) + code[match.end():]
-                mutants.append((mutant, "Added shell=True to subprocess call"))
+                mutants.append((mutant, "[Variant 2] Added shell=True to subprocess call"))
 
-        # Convert list args to string with shell=True
+        # Convert list args to string with shell=True (f-string variant)
         list_pattern = r'subprocess\.(run|call|Popen|check_output)\s*\(\s*\[([^\]]+)\]'
         matches = list(re.finditer(list_pattern, code))
 
@@ -971,6 +1182,7 @@ class CMDINJECT(SecurityMutationOperator):
             args = match.group(2)
             # Convert list to f-string, preserving variables
             parts = []
+            vars_used = []
             for a in args.split(','):
                 a = a.strip()
                 if a.startswith('"') or a.startswith("'"):
@@ -979,10 +1191,27 @@ class CMDINJECT(SecurityMutationOperator):
                 else:
                     # Variable - use f-string interpolation
                     parts.append('{' + a + '}')
+                    vars_used.append(a)
             cmd_string = ' '.join(parts)
+
+            # Variant 3: f-string with shell=True
             replacement = f'subprocess.{func}(f"{cmd_string}", shell=True'
             mutant = code[:match.start()] + replacement + code[match.end():]
-            mutants.append((mutant, "Converted subprocess list to shell string"))
+            mutants.append((mutant, "[Variant 3] Converted to f-string shell command"))
+
+            # Variant 4: Replace with os.system
+            os_cmd = f'os.system(f"{cmd_string}")'
+            mutant2 = code[:match.start()] + os_cmd + code[match.end():]
+            if 'import os' not in mutant2 and 'from os' not in mutant2:
+                mutant2 = 'import os\n' + mutant2
+            mutants.append((mutant2, "[Variant 4] Replaced subprocess with os.system"))
+
+            # Variant 5: Replace with os.popen
+            os_popen_cmd = f'os.popen(f"{cmd_string}")'
+            mutant3 = code[:match.start()] + os_popen_cmd + code[match.end():]
+            if 'import os' not in mutant3 and 'from os' not in mutant3:
+                mutant3 = 'import os\n' + mutant3
+            mutants.append((mutant3, "[Variant 5] Replaced subprocess with os.popen"))
 
         # Remove shlex.quote
         shlex_pattern = r'shlex\.quote\s*\(\s*([^)]+)\s*\)'
@@ -991,27 +1220,38 @@ class CMDINJECT(SecurityMutationOperator):
         for match in matches:
             inner = match.group(1)
             mutant = code[:match.start()] + inner + code[match.end():]
-            mutants.append((mutant, "Removed shlex.quote"))
+            mutants.append((mutant, "[Variant 6] Removed shlex.quote"))
 
-        # Handle os.popen: inject command concatenation
+        # Handle os.popen: multiple injection variants
         popen_pattern = r'os\.popen\s*\(([^)]+)\)'
         for match in re.finditer(popen_pattern, code):
             arg = match.group(1).strip()
-            # Variant 1: append shell command via concatenation
+            # Variant: append shell command via concatenation
             mutant = code[:match.start()] + f'os.popen({arg} + "; cat /etc/passwd")' + code[match.end():]
-            mutants.append((mutant, "Injected command via os.popen concatenation"))
+            mutants.append((mutant, "[Variant 7] Injected command via os.popen"))
 
-            # Variant 2: wrap with shell -c and add user input
-            mutant2 = code[:match.start()] + f'os.popen("sh -c " + {arg})' + code[match.end():]
-            mutants.append((mutant2, "Added shell wrapper to os.popen"))
-
-        # Handle os.system: inject command concatenation
+        # Handle os.system: multiple injection variants
         system_pattern = r'os\.system\s*\(([^)]+)\)'
         for match in re.finditer(system_pattern, code):
             arg = match.group(1).strip()
-            # Inject command concatenation
+            # Variant: append shell command
             mutant = code[:match.start()] + f'os.system({arg} + "; id")' + code[match.end():]
-            mutants.append((mutant, "Injected command via os.system concatenation"))
+            mutants.append((mutant, "[Variant 8] Injected command via os.system"))
+
+        # NEW: Replace safe subprocess patterns with dangerous eval-based patterns
+        # Pattern: subprocess.run(["cmd", arg]) → eval("__import__('os').system('cmd ' + arg)")
+        safe_subprocess = r'subprocess\.(run|call)\s*\(\s*\[([^\]]+)\][^)]*\)'
+        for match in re.finditer(safe_subprocess, code):
+            args = match.group(2)
+            parts = [a.strip().strip('"\'') for a in args.split(',')]
+            if len(parts) >= 2:
+                cmd = parts[0]
+                var = parts[1] if not parts[1].startswith('"') else parts[1]
+                # Only if there's a variable involved
+                if not var.startswith('"') and not var.startswith("'"):
+                    eval_cmd = f"eval(f\"__import__('os').system('{cmd} ' + {var})\")"
+                    mutant = code[:match.start()] + eval_cmd + code[match.end():]
+                    mutants.append((mutant, "[Variant 9] Replaced subprocess with eval-based injection"))
 
         return mutants
 
@@ -1095,17 +1335,23 @@ class DESERIAL(SecurityMutationOperator):
     Example:
         data = json.loads(user_input)
         → data = pickle.loads(user_input)
+
+    Also handles YAML gadget patterns for CWE-502.
     """
 
     def __init__(self):
         super().__init__(
             name="DESERIAL",
             description="Replace safe deserialization with unsafe methods",
-            target_cwes=["CWE-502"]
+            target_cwes=["CWE-502", "CWE-94"]
         )
 
     def applies_to(self, code: str) -> bool:
-        safe_patterns = ['json.loads', 'json.load', 'yaml.safe_load', 'ast.literal_eval']
+        safe_patterns = ['json.loads', 'json.load', 'yaml.safe_load', 'ast.literal_eval',
+                         'SafeLoader', 'safe_load', 'literal_eval']
+        # Also check for YAML with Loader specification
+        if 'yaml.load' in code and 'Loader' in code:
+            return True
         return any(p in code for p in safe_patterns)
 
     def mutate(self, code: str) -> List[Tuple[str, str]]:
@@ -1153,6 +1399,32 @@ class DESERIAL(SecurityMutationOperator):
             mutant2 = code.replace('yaml.safe_load', 'yaml.unsafe_load')
             mutants.append((mutant2, "yaml.safe_load → yaml.unsafe_load"))
 
+            # Variant 3: yaml.load with FullLoader (allows some Python objects)
+            mutant3 = code.replace('yaml.safe_load', 'yaml.load')
+            mutant3 = mutant3.replace('yaml.load(', 'yaml.load(Loader=yaml.FullLoader, ')
+            mutants.append((mutant3, "yaml.safe_load → yaml.load with FullLoader"))
+
+        # Replace SafeLoader with unsafe Loader
+        if 'SafeLoader' in code:
+            mutant = code.replace('SafeLoader', 'Loader')
+            mutants.append((mutant, "SafeLoader → Loader (unsafe)"))
+
+            mutant2 = code.replace('SafeLoader', 'UnsafeLoader')
+            mutants.append((mutant2, "SafeLoader → UnsafeLoader"))
+
+            mutant3 = code.replace('SafeLoader', 'FullLoader')
+            mutants.append((mutant3, "SafeLoader → FullLoader (allows Python objects)"))
+
+        # Handle yaml.load with Loader=SafeLoader → remove Loader restriction
+        loader_pattern = r'yaml\.load\s*\([^)]*Loader\s*=\s*(?:yaml\.)?SafeLoader[^)]*\)'
+        matches = list(re.finditer(loader_pattern, code))
+        for match in matches:
+            # Remove the Loader argument
+            original = match.group(0)
+            unsafe = re.sub(r',?\s*Loader\s*=\s*(?:yaml\.)?SafeLoader', '', original)
+            mutant = code[:match.start()] + unsafe + code[match.end():]
+            mutants.append((mutant, "Removed SafeLoader restriction from yaml.load"))
+
         # Replace ast.literal_eval with multiple unsafe options
         if 'ast.literal_eval' in code:
             # Variant 1: eval
@@ -1162,6 +1434,23 @@ class DESERIAL(SecurityMutationOperator):
             # Variant 2: exec (different behavior but dangerous)
             mutant2 = code.replace('ast.literal_eval', 'exec')
             mutants.append((mutant2, "ast.literal_eval → exec"))
+
+        # === NEW: YAML Gadget injection patterns ===
+        # If code validates YAML content, inject gadget acceptance
+        if 'yaml' in code.lower():
+            # Pattern: Remove checks that block !!python tags
+            python_tag_check = r'if\s+["\']!!python["\'].*in.*:\s*\n\s*(raise|return)[^\n]*\n'
+            matches = list(re.finditer(python_tag_check, code))
+            for match in matches:
+                mutant = code[:match.start()] + code[match.end():]
+                mutants.append((mutant, "Removed !!python tag validation (YAML gadget)"))
+
+            # Pattern: Remove tag validation
+            tag_check = r'if\s+[\w.]+\.startswith\s*\(["\']!!["\'][^)]*\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+            matches = list(re.finditer(tag_check, code))
+            for match in matches:
+                mutant = code[:match.start()] + code[match.end():]
+                mutants.append((mutant, "Removed YAML tag prefix validation"))
 
         return mutants
 
@@ -1816,12 +2105,572 @@ class WEAKRANDOM(SecurityMutationOperator):
         return mutants
 
 
+# =============================================================================
+# NEW OPERATORS FOR EXPANDED CWE COVERAGE
+# =============================================================================
+
+class EVALINJECT(SecurityMutationOperator):
+    """
+    Eval Injection (EVALINJECT) - CWE-95
+
+    Replaces safe evaluation with unsafe eval/exec.
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="EVALINJECT",
+            description="Enable code injection via eval/exec",
+            target_cwes=["CWE-95"]
+        )
+
+    def applies_to(self, code: str) -> bool:
+        safe_patterns = ['ast.literal_eval', 'json.loads', 'safe_eval', 'literal_eval']
+        return any(p in code for p in safe_patterns)
+
+    def mutate(self, code: str) -> List[Tuple[str, str]]:
+        mutants = []
+
+        # ast.literal_eval → eval
+        if 'ast.literal_eval' in code:
+            mutant = code.replace('ast.literal_eval', 'eval')
+            mutants.append((mutant, "ast.literal_eval → eval (code injection)"))
+
+        # safe_eval → eval
+        if 'safe_eval' in code:
+            mutant = code.replace('safe_eval', 'eval')
+            mutants.append((mutant, "safe_eval → eval"))
+
+        # json.loads → eval (for JSON-like strings)
+        if 'json.loads' in code:
+            mutant = code.replace('json.loads', 'eval')
+            mutants.append((mutant, "json.loads → eval (code injection)"))
+
+        return mutants
+
+
+class LOGINJECT(SecurityMutationOperator):
+    """
+    Log Injection (LOGINJECT) - CWE-117
+
+    Removes log sanitization allowing log injection/forging.
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="LOGINJECT",
+            description="Remove log sanitization for log injection",
+            target_cwes=["CWE-117"]
+        )
+
+    def applies_to(self, code: str) -> bool:
+        log_patterns = ['logging.', 'logger.', 'log.info', 'log.error', 'log.warning', 'log.debug']
+        sanitize_patterns = ['replace(', 'strip(', 'encode(', 'escape(', 'sanitize']
+        return any(l in code for l in log_patterns) and any(s in code for s in sanitize_patterns)
+
+    def mutate(self, code: str) -> List[Tuple[str, str]]:
+        mutants = []
+
+        # Remove .replace('\n', '') or .replace('\r', '') before logging
+        newline_sanitize = r'\.replace\s*\(\s*["\'][\\]?[nr]["\'],\s*["\']["\']s*\)'
+        if re.search(newline_sanitize, code):
+            mutant = re.sub(newline_sanitize, '', code)
+            mutants.append((mutant, "Removed newline sanitization from log input"))
+
+        # Remove .strip() before logging
+        strip_pattern = r'\.strip\s*\(\s*\)'
+        if re.search(strip_pattern, code) and 'log' in code.lower():
+            mutant = re.sub(strip_pattern, '', code)
+            mutants.append((mutant, "Removed strip() from log input"))
+
+        return mutants
+
+
+class OPENREDIRECT(SecurityMutationOperator):
+    """
+    Open Redirect (OPENREDIRECT) - CWE-601
+
+    Removes URL validation allowing open redirect attacks.
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="OPENREDIRECT",
+            description="Remove redirect URL validation",
+            target_cwes=["CWE-601"]
+        )
+        self.redirect_validators = [
+            'is_safe_url', 'url_has_allowed_host', 'validate_redirect',
+            'check_redirect', 'safe_redirect', 'allowed_redirect',
+            'ALLOWED_HOSTS', 'startswith', 'urlparse'
+        ]
+
+    def applies_to(self, code: str) -> bool:
+        if 'redirect' in code.lower():
+            return any(v in code for v in self.redirect_validators)
+        return False
+
+    def mutate(self, code: str) -> List[Tuple[str, str]]:
+        mutants = []
+
+        # Remove is_safe_url check
+        safe_url_pattern = r'if\s+not\s+is_safe_url\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for match in re.finditer(safe_url_pattern, code):
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "Removed is_safe_url redirect validation"))
+
+        # Remove url_has_allowed_host check
+        allowed_host_pattern = r'if\s+not\s+url_has_allowed_host\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for match in re.finditer(allowed_host_pattern, code):
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "Removed url_has_allowed_host check"))
+
+        # Remove startswith check for redirect URLs
+        startswith_pattern = r'if\s+not\s+[\w.]+\.startswith\s*\([^)]*["\']/[^)]*\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for match in re.finditer(startswith_pattern, code):
+            if 'redirect' in code.lower():
+                mutant = code[:match.start()] + code[match.end():]
+                mutants.append((mutant, "Removed redirect URL prefix validation"))
+
+        return mutants
+
+
+class NOCERTVALID(SecurityMutationOperator):
+    """
+    Improper Certificate Validation (NOCERTVALID) - CWE-295
+
+    Disables SSL/TLS certificate validation.
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="NOCERTVALID",
+            description="Disable certificate validation",
+            target_cwes=["CWE-295"]
+        )
+
+    def applies_to(self, code: str) -> bool:
+        patterns = ['verify=True', 'CERT_REQUIRED', 'check_hostname', 'ssl', 'https', 'requests.']
+        return any(p in code for p in patterns)
+
+    def mutate(self, code: str) -> List[Tuple[str, str]]:
+        mutants = []
+
+        # verify=True → verify=False
+        if 'verify=True' in code:
+            mutant = code.replace('verify=True', 'verify=False')
+            mutants.append((mutant, "Disabled SSL certificate verification"))
+
+        # CERT_REQUIRED → CERT_NONE
+        if 'CERT_REQUIRED' in code:
+            mutant = code.replace('CERT_REQUIRED', 'CERT_NONE')
+            mutants.append((mutant, "Changed CERT_REQUIRED to CERT_NONE"))
+
+        # check_hostname = True → False
+        if 'check_hostname = True' in code or 'check_hostname=True' in code:
+            mutant = code.replace('check_hostname = True', 'check_hostname = False')
+            mutant = mutant.replace('check_hostname=True', 'check_hostname=False')
+            mutants.append((mutant, "Disabled hostname checking"))
+
+        return mutants
+
+
+class FILEUPLOAD(SecurityMutationOperator):
+    """
+    Unrestricted File Upload (FILEUPLOAD) - CWE-434
+
+    Removes file type/extension validation.
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="FILEUPLOAD",
+            description="Remove file upload validation",
+            target_cwes=["CWE-434"]
+        )
+
+    def applies_to(self, code: str) -> bool:
+        upload_patterns = ['upload', 'file', 'multipart', 'request.files']
+        extension_patterns = ['allowed_extensions', 'ALLOWED_EXTENSIONS', 'endswith', 'splitext', 'mimetype', 'content_type']
+        return any(u in code.lower() for u in upload_patterns) and any(e in code for e in extension_patterns)
+
+    def mutate(self, code: str) -> List[Tuple[str, str]]:
+        mutants = []
+
+        # Remove extension check: if ext not in ALLOWED_EXTENSIONS
+        ext_check = r'if\s+[\w.]+\s+not\s+in\s+(ALLOWED_EXTENSIONS|allowed_extensions)[^\n]*:\s*\n\s*(raise|return)[^\n]*\n'
+        for match in re.finditer(ext_check, code):
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "Removed file extension validation"))
+
+        # Remove endswith check for extensions
+        endswith_check = r'if\s+not\s+[\w.]+\.endswith\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for match in re.finditer(endswith_check, code):
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "Removed file extension endswith check"))
+
+        # Remove mimetype/content_type check
+        mime_check = r'if\s+[\w.]+\.(mimetype|content_type)\s+not\s+in[^\n]*:\s*\n\s*(raise|return)[^\n]*\n'
+        for match in re.finditer(mime_check, code):
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "Removed MIME type validation"))
+
+        return mutants
+
+
+class INFOEXPOSE(SecurityMutationOperator):
+    """
+    Information Exposure (INFOEXPOSE) - CWE-200
+
+    Enables information disclosure through error messages, debug info, etc.
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="INFOEXPOSE",
+            description="Enable information exposure",
+            target_cwes=["CWE-200", "CWE-209"]
+        )
+
+    def applies_to(self, code: str) -> bool:
+        patterns = ['DEBUG', 'debug', 'traceback', 'exc_info', 'exception', 'error', 'except']
+        return any(p in code for p in patterns)
+
+    def mutate(self, code: str) -> List[Tuple[str, str]]:
+        mutants = []
+
+        # DEBUG = False → DEBUG = True
+        if 'DEBUG = False' in code or 'DEBUG=False' in code:
+            mutant = code.replace('DEBUG = False', 'DEBUG = True')
+            mutant = mutant.replace('DEBUG=False', 'DEBUG=True')
+            mutants.append((mutant, "Enabled DEBUG mode (information exposure)"))
+
+        # Remove generic exception handling that hides errors
+        generic_except = r'except\s+Exception[^:]*:\s*\n(\s+)(pass|return\s+None|return\s*$)'
+        for match in re.finditer(generic_except, code):
+            indent = match.group(1)
+            # Replace with traceback print
+            replacement = f'except Exception as e:\n{indent}import traceback; traceback.print_exc()'
+            mutant = code[:match.start()] + replacement + code[match.end():]
+            mutants.append((mutant, "Exposed exception details"))
+
+        return mutants
+
+
+class WEAKKEY(SecurityMutationOperator):
+    """
+    Inadequate Encryption Strength (WEAKKEY) - CWE-326
+
+    Reduces key sizes to weak values.
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="WEAKKEY",
+            description="Reduce cryptographic key size",
+            target_cwes=["CWE-326"]
+        )
+
+    def applies_to(self, code: str) -> bool:
+        patterns = ['key_size', 'bits', 'RSA', 'generate', 'AES', 'key_length']
+        return any(p in code for p in patterns)
+
+    def mutate(self, code: str) -> List[Tuple[str, str]]:
+        mutants = []
+
+        # key_size=2048 → key_size=512
+        key_size_pattern = r'key_size\s*=\s*(\d{4})'
+        for match in re.finditer(key_size_pattern, code):
+            original_size = match.group(1)
+            mutant = code[:match.start()] + 'key_size=512' + code[match.end():]
+            mutants.append((mutant, f"Reduced key_size from {original_size} to 512 bits"))
+
+        # bits=256 → bits=64
+        bits_pattern = r'bits\s*=\s*(128|256|512)'
+        for match in re.finditer(bits_pattern, code):
+            mutant = code[:match.start()] + 'bits=64' + code[match.end():]
+            mutants.append((mutant, "Reduced encryption bits to weak 64-bit"))
+
+        return mutants
+
+
+class LDAPINJECT(SecurityMutationOperator):
+    """
+    LDAP Injection (LDAPINJECT) - CWE-90
+
+    Enables LDAP injection by removing sanitization.
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="LDAPINJECT",
+            description="Enable LDAP injection",
+            target_cwes=["CWE-90"]
+        )
+
+    def applies_to(self, code: str) -> bool:
+        return 'ldap' in code.lower() or 'escape_dn' in code or 'escape_filter' in code
+
+    def mutate(self, code: str) -> List[Tuple[str, str]]:
+        mutants = []
+
+        # Remove escape_dn_chars
+        if 'escape_dn_chars' in code:
+            pattern = r'escape_dn_chars\s*\(\s*([^)]+)\s*\)'
+            for match in re.finditer(pattern, code):
+                inner = match.group(1)
+                mutant = code[:match.start()] + inner + code[match.end():]
+                mutants.append((mutant, "Removed LDAP DN escaping"))
+
+        # Remove escape_filter_chars
+        if 'escape_filter_chars' in code:
+            pattern = r'escape_filter_chars\s*\(\s*([^)]+)\s*\)'
+            for match in re.finditer(pattern, code):
+                inner = match.group(1)
+                mutant = code[:match.start()] + inner + code[match.end():]
+                mutants.append((mutant, "Removed LDAP filter escaping"))
+
+        # Convert parameterized LDAP to string format
+        if 'ldap' in code.lower() and '%s' in code:
+            # (cn=%s) with bind → (cn='+user+')
+            mutant = re.sub(r'%s', "'+user+'", code)
+            mutants.append((mutant, "Converted LDAP parameter to string injection"))
+
+        return mutants
+
+
+class XMLBOMB(SecurityMutationOperator):
+    """
+    XML Entity Expansion / Billion Laughs (XMLBOMB) - CWE-776
+
+    Removes XML entity expansion limits.
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="XMLBOMB",
+            description="Remove XML entity expansion protection",
+            target_cwes=["CWE-776"]
+        )
+
+    def applies_to(self, code: str) -> bool:
+        return 'xml' in code.lower() or 'etree' in code or 'lxml' in code or 'defusedxml' in code
+
+    def mutate(self, code: str) -> List[Tuple[str, str]]:
+        mutants = []
+
+        # defusedxml → xml.etree
+        if 'defusedxml' in code:
+            mutant = code.replace('defusedxml.ElementTree', 'xml.etree.ElementTree')
+            mutant = mutant.replace('from defusedxml import', 'from xml.etree import')
+            mutants.append((mutant, "Replaced defusedxml with vulnerable xml.etree"))
+
+        # Remove huge_tree=False
+        if 'huge_tree=False' in code:
+            mutant = code.replace('huge_tree=False', 'huge_tree=True')
+            mutants.append((mutant, "Enabled huge_tree (allows entity expansion)"))
+
+        # Remove resolve_entities=False
+        if 'resolve_entities=False' in code:
+            mutant = code.replace('resolve_entities=False', 'resolve_entities=True')
+            mutants.append((mutant, "Enabled entity resolution"))
+
+        return mutants
+
+
+class REGEXDOS(SecurityMutationOperator):
+    """
+    Regular Expression Denial of Service (REGEXDOS) - CWE-1333
+
+    Introduces ReDoS vulnerable regex patterns.
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="REGEXDOS",
+            description="Introduce ReDoS vulnerable patterns",
+            target_cwes=["CWE-1333", "CWE-400"]
+        )
+
+    def applies_to(self, code: str) -> bool:
+        return 're.compile' in code or 're.match' in code or 're.search' in code or 'regex' in code.lower()
+
+    def mutate(self, code: str) -> List[Tuple[str, str]]:
+        mutants = []
+
+        # Simple quantifiers → nested quantifiers (catastrophic backtracking)
+        # [a-z]+ → (a+)+
+        if 're.compile' in code or 're.match' in code:
+            pattern = r'r["\']([^"\']+)["\']'
+            for match in re.finditer(pattern, code):
+                regex = match.group(1)
+                # Add nested quantifier to make it vulnerable
+                if '+' in regex or '*' in regex:
+                    vulnerable = regex.replace('+', '+)+')
+                    vulnerable = '(' + vulnerable if not vulnerable.startswith('(') else vulnerable
+                    mutant = code[:match.start()] + f'r"{vulnerable}"' + code[match.end():]
+                    mutants.append((mutant, "Introduced nested quantifier (ReDoS vulnerable)"))
+
+        return mutants
+
+
+class CREDEXPOSE(SecurityMutationOperator):
+    """
+    Insufficiently Protected Credentials (CREDEXPOSE) - CWE-522
+
+    Weakens credential protection mechanisms.
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="CREDEXPOSE",
+            description="Weaken credential protection",
+            target_cwes=["CWE-522"]
+        )
+
+    def applies_to(self, code: str) -> bool:
+        patterns = ['password', 'credential', 'secret', 'token', 'hash', 'bcrypt', 'argon', 'scrypt']
+        return any(p in code.lower() for p in patterns)
+
+    def mutate(self, code: str) -> List[Tuple[str, str]]:
+        mutants = []
+
+        # bcrypt.hashpw → plaintext
+        if 'bcrypt.hashpw' in code:
+            pattern = r'bcrypt\.hashpw\s*\(\s*([^,]+),\s*[^)]+\)'
+            for match in re.finditer(pattern, code):
+                password_var = match.group(1).strip()
+                mutant = code[:match.start()] + password_var + code[match.end():]
+                mutants.append((mutant, "Stored password in plaintext instead of bcrypt hash"))
+
+        # Remove password hashing
+        if 'hash(' in code.lower() and 'password' in code.lower():
+            pattern = r'(\w+)\s*=\s*\w*hash\w*\s*\(\s*(\w+)\s*[^)]*\)'
+            for match in re.finditer(pattern, code, re.IGNORECASE):
+                var_name = match.group(1)
+                original = match.group(2)
+                mutant = code[:match.start()] + f'{var_name} = {original}' + code[match.end():]
+                mutants.append((mutant, "Removed password hashing"))
+
+        return mutants
+
+
+class WEAKPASSREQ(SecurityMutationOperator):
+    """
+    Weak Password Requirements (WEAKPASSREQ) - CWE-521
+
+    Removes password complexity requirements.
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="WEAKPASSREQ",
+            description="Remove password complexity requirements",
+            target_cwes=["CWE-521"]
+        )
+
+    def applies_to(self, code: str) -> bool:
+        patterns = ['password', 'len(', 'min_length', 'complexity', 'upper', 'lower', 'digit', 'special']
+        return 'password' in code.lower() and any(p in code for p in patterns[1:])
+
+    def mutate(self, code: str) -> List[Tuple[str, str]]:
+        mutants = []
+
+        # Remove length check: if len(password) < 8
+        len_check = r'if\s+len\s*\(\s*\w*password\w*\s*\)\s*[<>=]+\s*\d+\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for match in re.finditer(len_check, code, re.IGNORECASE):
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "Removed password length requirement"))
+
+        # Remove complexity checks
+        complexity_patterns = [
+            (r'if\s+not\s+any\s*\([^)]*\.isupper[^)]*\)[^\n]*:\s*\n\s*(raise|return)[^\n]*\n', "uppercase"),
+            (r'if\s+not\s+any\s*\([^)]*\.islower[^)]*\)[^\n]*:\s*\n\s*(raise|return)[^\n]*\n', "lowercase"),
+            (r'if\s+not\s+any\s*\([^)]*\.isdigit[^)]*\)[^\n]*:\s*\n\s*(raise|return)[^\n]*\n', "digit"),
+        ]
+        for pattern, desc in complexity_patterns:
+            for match in re.finditer(pattern, code):
+                mutant = code[:match.start()] + code[match.end():]
+                mutants.append((mutant, f"Removed password {desc} requirement"))
+
+        return mutants
+
+
+class MISSINGAUTH(SecurityMutationOperator):
+    """
+    Missing Authorization (MISSINGAUTH) - CWE-862, CWE-863
+
+    Removes authorization checks for sensitive operations.
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="MISSINGAUTH",
+            description="Remove authorization checks",
+            target_cwes=["CWE-862", "CWE-863"]
+        )
+
+    def applies_to(self, code: str) -> bool:
+        patterns = ['has_permission', 'is_admin', 'is_owner', 'can_access', 'authorize', 'allowed', 'role']
+        return any(p in code.lower() for p in patterns)
+
+    def mutate(self, code: str) -> List[Tuple[str, str]]:
+        mutants = []
+
+        # Remove permission checks
+        perm_patterns = ['has_permission', 'has_perm', 'check_permission', 'can_access', 'is_allowed']
+        for func in perm_patterns:
+            pattern = rf'if\s+not\s+[\w.]*{func}\s*\([^)]*\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+            for match in re.finditer(pattern, code, re.IGNORECASE):
+                mutant = code[:match.start()] + code[match.end():]
+                mutants.append((mutant, f"Removed {func} authorization check"))
+
+        # Replace permission check with True
+        for func in perm_patterns:
+            pattern = rf'[\w.]*{func}\s*\([^)]*\)'
+            for match in re.finditer(pattern, code, re.IGNORECASE):
+                mutant = code[:match.start()] + 'True' + code[match.end():]
+                mutants.append((mutant, f"Bypassed {func} with True"))
+
+        return mutants
+
+
+class HTTPRS(SecurityMutationOperator):
+    """
+    HTTP Response Splitting (HTTPRS) - CWE-113
+
+    Removes header injection sanitization.
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="HTTPRS",
+            description="Enable HTTP response splitting",
+            target_cwes=["CWE-113"]
+        )
+
+    def applies_to(self, code: str) -> bool:
+        return 'header' in code.lower() and ('replace' in code or 'strip' in code or 'encode' in code)
+
+    def mutate(self, code: str) -> List[Tuple[str, str]]:
+        mutants = []
+
+        # Remove newline stripping from headers
+        if 'header' in code.lower():
+            strip_pattern = r'\.replace\s*\(\s*["\'][\\]?[rn]["\'],\s*["\']["\'\s*\)'
+            if re.search(strip_pattern, code):
+                mutant = re.sub(strip_pattern, '', code)
+                mutants.append((mutant, "Removed CRLF sanitization from headers"))
+
+        return mutants
+
+
 # Export all operators
 __all__ = [
     'SecurityMutationOperator',
     'PSQLI',
     'RVALID',
-    'INPUTVAL',  # CWE-20 input validation
+    'INPUTVAL',
+    'SUBDOMAIN_SPOOF',
     'RHTTPO',
     'WEAKCRYPTO',
     'HARDCODE',
@@ -1830,7 +2679,6 @@ __all__ = [
     'CMDINJECT',
     'RENCRYPT',
     'DESERIAL',
-    # New operators
     'SSRF',
     'IDOR',
     'XXE',
@@ -1838,4 +2686,19 @@ __all__ = [
     'CORS_WEAK',
     'CSRF_REMOVE',
     'WEAKRANDOM',
+    # New operators for expanded CWE coverage
+    'EVALINJECT',
+    'LOGINJECT',
+    'OPENREDIRECT',
+    'NOCERTVALID',
+    'FILEUPLOAD',
+    'INFOEXPOSE',
+    'WEAKKEY',
+    'LDAPINJECT',
+    'XMLBOMB',
+    'REGEXDOS',
+    'CREDEXPOSE',
+    'WEAKPASSREQ',
+    'MISSINGAUTH',
+    'HTTPRS',
 ]

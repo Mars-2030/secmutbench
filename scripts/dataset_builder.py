@@ -41,17 +41,18 @@ try:
     operators_dir = str(Path(__file__).parent.parent / "operators")
     if operators_dir not in sys.path:
         sys.path.insert(0, operators_dir)
-    from operators.operator_registry import CWE_OPERATOR_MAP
+    from operators.operator_registry import CWE_OPERATOR_MAP, OPERATORS
     OPERATOR_REGISTRY_AVAILABLE = True
 except ImportError:
     try:
         # Try alternate import path
         sys.path.insert(0, str(Path(__file__).parent.parent))
-        from operators.operator_registry import CWE_OPERATOR_MAP
+        from operators.operator_registry import CWE_OPERATOR_MAP, OPERATORS
         OPERATOR_REGISTRY_AVAILABLE = True
     except ImportError as e:
         OPERATOR_REGISTRY_AVAILABLE = False
         CWE_OPERATOR_MAP = {}
+        OPERATORS = {}
         print(f"Warning: operator_registry not available ({e})")
 
 try:
@@ -66,6 +67,25 @@ try:
 except ImportError:
     QUALITY_MANAGER_AVAILABLE = False
     print("Warning: quality_manager not available")
+
+# Import mutation engine for pre-generating mutants
+try:
+    eval_dir = str(Path(__file__).parent.parent)
+    if eval_dir not in sys.path:
+        sys.path.insert(0, eval_dir)
+    from evaluation.mutation_engine import MutationEngine
+    MUTATION_ENGINE_AVAILABLE = True
+except ImportError:
+    MUTATION_ENGINE_AVAILABLE = False
+    print("Warning: mutation_engine not available, mutants will not be pre-generated")
+
+# Import test runner for VD validation
+try:
+    from evaluation.test_runner import TestRunner
+    TEST_RUNNER_AVAILABLE = True
+except ImportError:
+    TEST_RUNNER_AVAILABLE = False
+    print("Warning: test_runner not available, VD validation will be skipped")
 
 
 # =============================================================================
@@ -193,7 +213,9 @@ class DatasetBuilder:
               distribution: Optional[Dict[str, int]] = None,
               apply_contamination_prevention: bool = True,
               validate: bool = True,
-              deep_validate: bool = False) -> List[Sample]:
+              deep_validate: bool = False,
+              min_samples_per_cwe: int = 5,
+              skip_vd_validation: bool = False) -> List[Sample]:
         """
         Build the complete dataset.
 
@@ -202,6 +224,8 @@ class DatasetBuilder:
             apply_contamination_prevention: Whether to apply perturbation
             validate: Whether to validate samples
             deep_validate: Whether to run comprehensive validation (runtime tests, Bandit)
+            min_samples_per_cwe: Minimum samples per CWE to include
+            skip_vd_validation: Skip VD validation (security tests pass on secure, fail on insecure)
 
         Returns:
             List of validated samples
@@ -269,8 +293,8 @@ class DatasetBuilder:
             print("\nStep 4: Skipping validation")
 
         # Step 5: Filter to CWEs with operators and sufficient samples
-        print("\nStep 5: Filtering to CWEs with operators and 5+ samples...")
-        filtered, filter_stats = self._filter_to_usable_cwes(selected, min_samples=5)
+        print(f"\nStep 5: Filtering to CWEs with operators and {min_samples_per_cwe}+ samples...")
+        filtered, filter_stats = self._filter_to_usable_cwes(selected, min_samples=min_samples_per_cwe)
         print(f"  Before: {len(selected)} samples across {filter_stats['cwes_before']} CWEs")
         print(f"  After: {len(filtered)} samples across {filter_stats['cwes_after']} CWEs")
         if filter_stats['removed_cwes']:
@@ -282,9 +306,10 @@ class DatasetBuilder:
         fixed = self._fix_samples(selected)
         print(f"  Fixed: {len(fixed)} samples")
 
-        # Step 7: Final validation (ensure operators fire, signatures match)
-        print("\nStep 7: Final validation (verify operators fire, signatures match)...")
-        validated, val_stats = self._final_validation(fixed)
+        # Step 7: Final validation (ensure operators fire, signatures match, VD correct)
+        vd_msg = " + VD validation" if not skip_vd_validation else ""
+        print(f"\nStep 7: Final validation (verify operators fire, signatures match{vd_msg})...")
+        validated, val_stats = self._final_validation(fixed, skip_vd_validation=skip_vd_validation)
         print(f"  Before: {val_stats['before']} samples")
         print(f"  After: {val_stats['after']} samples")
         if val_stats['dropped']['no_operators_fire'] > 0:
@@ -301,7 +326,20 @@ class DatasetBuilder:
             print(f"  Dropped (insecure secure_code): {val_stats['dropped']['insecure_secure_code']}")
         if val_stats['dropped']['tautological_security_test'] > 0:
             print(f"  Dropped (tautological security test): {val_stats['dropped']['tautological_security_test']}")
+        if val_stats['dropped'].get('vd_both_pass', 0) > 0:
+            print(f"  Dropped (VD both pass - test doesn't detect vuln): {val_stats['dropped']['vd_both_pass']}")
+        if val_stats['dropped'].get('vd_both_fail', 0) > 0:
+            print(f"  Dropped (VD both fail - test crashes): {val_stats['dropped']['vd_both_fail']}")
+        if val_stats['dropped'].get('vd_inverted', 0) > 0:
+            print(f"  Dropped (VD inverted - secure fails): {val_stats['dropped']['vd_inverted']}")
         fixed = validated
+
+        # Step 7.5: Pre-generate mutants for each sample
+        if MUTATION_ENGINE_AVAILABLE:
+            print("\nStep 7.5: Pre-generating mutants...")
+            fixed = self._pregenerate_mutants(fixed)
+        else:
+            print("\nStep 7.5: Skipping mutant pre-generation (engine not available)")
 
         # Step 8: Add quality metadata
         if QUALITY_MANAGER_AVAILABLE:
@@ -557,7 +595,7 @@ class DatasetBuilder:
         cwe_base = cwe.split("_")[0] if "_" in cwe else cwe
         return generate_security_test(entry_point, cwe_base, code)
 
-    def _final_validation(self, samples: List[Sample]) -> Tuple[List[Sample], Dict]:
+    def _final_validation(self, samples: List[Sample], skip_vd_validation: bool = False) -> Tuple[List[Sample], Dict]:
         """
         Final validation pass to remove samples that can't produce meaningful results.
 
@@ -565,9 +603,11 @@ class DatasetBuilder:
         1. At least one assigned operator actually fires on the code
         2. Secure code differs meaningfully from insecure code
         3. Function signature matches test calls (no TypeError at runtime)
+        4. Security tests pass on secure code and fail on insecure code (VD validation)
 
         Args:
             samples: List of samples to validate
+            skip_vd_validation: Skip VD validation step
 
         Returns:
             Tuple of (valid_samples, stats_dict)
@@ -590,9 +630,20 @@ class DatasetBuilder:
             "empty_code": 0,
             "signature_mismatch": 0,
             "insecure_secure_code": 0,
-            "tautological_security_test": 0
+            "tautological_security_test": 0,
+            "vd_both_pass": 0,      # Test passes on insecure code (doesn't detect vuln)
+            "vd_both_fail": 0,      # Test fails on secure code too
+            "vd_inverted": 0,       # Secure fails, insecure passes
         }
         dropped_details = []
+
+        # Initialize test runner for VD validation
+        vd_runner = None
+        if TEST_RUNNER_AVAILABLE:
+            try:
+                vd_runner = TestRunner(timeout=3.0)
+            except Exception as e:
+                print(f"Warning: Could not initialize TestRunner: {e}")
 
         # Patterns that indicate insecure code - these should NOT appear in secure_code
         INSECURE_PATTERNS = {
@@ -651,18 +702,27 @@ class DatasetBuilder:
                 dropped_details.append((sample.id, "empty_code"))
                 continue
 
-            # Check 2: At least one operator actually produces mutants (not just applies_to)
+            # Check 2: At least one CWE-appropriate operator produces mutants
+            # IMPORTANT: Only use operators mapped to this sample's CWE to prevent
+            # cross-contamination (e.g., WEAKCRYPTO firing on CWE-89 samples)
             if operators_available:
                 assigned_ops = sample.mutation_operators or []
+
+                # If no operators assigned, get from CWE_OPERATOR_MAP (strict CWE matching)
+                if not assigned_ops and sample.cwe in CWE_OPERATOR_MAP:
+                    assigned_ops = CWE_OPERATOR_MAP[sample.cwe]
+
                 has_mutants, working_ops = operators_produce_mutants(sample.secure_code, assigned_ops)
 
                 if not has_mutants:
-                    # Try fallback: any operator that produces mutants
-                    all_op_names = list(OPERATORS.keys())
-                    has_mutants, working_ops = operators_produce_mutants(sample.secure_code, all_op_names)
+                    # RESTRICTED fallback: only try operators for THIS CWE, not all operators
+                    # This prevents cross-contamination (e.g., NULLCHECK on CWE-89)
+                    cwe_ops = CWE_OPERATOR_MAP.get(sample.cwe, [])
+                    if cwe_ops and cwe_ops != assigned_ops:
+                        has_mutants, working_ops = operators_produce_mutants(sample.secure_code, cwe_ops)
 
                     if has_mutants:
-                        # Update sample's operators to ones that actually produce mutants
+                        # Update sample's operators to CWE-appropriate ones that fire
                         sample = Sample(
                             id=sample.id,
                             cwe=sample.cwe,
@@ -679,8 +739,9 @@ class DatasetBuilder:
                             original_id=sample.original_id
                         )
                     else:
+                        # No CWE-appropriate operators fire - drop sample
                         dropped["no_mutants_produced"] += 1
-                        dropped_details.append((sample.id, f"no_mutants_produced (assigned: {assigned_ops})"))
+                        dropped_details.append((sample.id, f"no_mutants_produced (CWE: {sample.cwe}, tried: {assigned_ops})"))
                         continue
 
             # Check 3: Meaningful difference between secure and insecure
@@ -725,6 +786,40 @@ class DatasetBuilder:
                 dropped_details.append((sample.id, "tautological_security_test: only useless assertions"))
                 continue
 
+            # Check 7: VD Validation - security tests must pass on secure, fail on insecure
+            # This ensures the tests actually detect the vulnerability
+            if not skip_vd_validation and vd_runner and sample.security_tests:
+                try:
+                    # Run tests on secure code - should PASS
+                    secure_result = vd_runner.run_tests(sample.security_tests, sample.secure_code)
+                    secure_pass = secure_result.all_passed
+
+                    # Run tests on insecure code - should FAIL
+                    insecure_result = vd_runner.run_tests(sample.security_tests, sample.insecure_code)
+                    insecure_pass = insecure_result.all_passed
+
+                    if secure_pass and insecure_pass:
+                        # Test doesn't detect the vulnerability
+                        dropped["vd_both_pass"] += 1
+                        dropped_details.append((sample.id, f"vd_both_pass: test passes on insecure code"))
+                        continue
+                    elif not secure_pass and not insecure_pass:
+                        # Test fails on secure code too (crash or assertion issue)
+                        err = secure_result.tests[0].error if secure_result.tests else "unknown"
+                        err_type = err.split(":")[0] if err else "unknown"
+                        dropped["vd_both_fail"] += 1
+                        dropped_details.append((sample.id, f"vd_both_fail: {err_type}"))
+                        continue
+                    elif not secure_pass and insecure_pass:
+                        # Inverted: secure fails but insecure passes
+                        dropped["vd_inverted"] += 1
+                        dropped_details.append((sample.id, "vd_inverted: secure fails, insecure passes"))
+                        continue
+                    # else: secure_pass and not insecure_pass - correct VD behavior
+                except Exception as e:
+                    # VD validation failed, skip this check but don't drop sample
+                    pass
+
             valid.append(sample)
 
         stats = {
@@ -754,6 +849,66 @@ class DatasetBuilder:
             updated.append(sample)
 
         return updated
+
+    def _pregenerate_mutants(self, samples: List[Sample], max_mutants: int = 20) -> List[Sample]:
+        """
+        Pre-generate mutants for each sample and attach as _mutants attribute.
+
+        This ensures deterministic, reproducible mutant sets across evaluation runs.
+        Uses expanded operators that generate multiple variants per mutation location.
+
+        Args:
+            samples: List of validated samples
+            max_mutants: Maximum mutants per sample (increased to 20 for variant expansion)
+
+        Returns:
+            Same samples list with _mutants attribute set
+        """
+        total_mutants = 0
+        samples_with_mutants = 0
+
+        for sample in samples:
+            # STRICT: Only use operators mapped to this sample's CWE
+            # This prevents cross-contamination (e.g., HARDCODE on CWE-79)
+            cwe_ops = CWE_OPERATOR_MAP.get(sample.cwe, [])
+            ops = list(sample.mutation_operators or [])
+
+            # Add any CWE-mapped operators not already assigned
+            for cwe_op in cwe_ops:
+                if cwe_op not in ops:
+                    ops.append(cwe_op)
+
+            engine = MutationEngine(ops if ops else None)
+
+            try:
+                mutation_result = engine.generate_mutants(
+                    sample.secure_code,
+                    cwe=None,
+                    max_mutants=max_mutants,
+                )
+
+                mutants_data = []
+                for mutant in mutation_result.mutants:
+                    mutants_data.append({
+                        "id": mutant.id,
+                        "operator": mutant.operator,
+                        "description": mutant.description,
+                        "mutated_code": mutant.mutated_code,
+                    })
+
+                sample._mutants = mutants_data
+                total_mutants += len(mutants_data)
+                if mutants_data:
+                    samples_with_mutants += 1
+
+            except Exception as e:
+                sample._mutants = []
+                print(f"  Warning: mutant generation failed for {sample.id}: {e}")
+
+        avg = total_mutants / len(samples) if samples else 0
+        print(f"  Total mutants: {total_mutants} across {samples_with_mutants} samples")
+        print(f"  Avg mutants/sample: {avg:.1f}")
+        return samples
 
     def _print_stats(self, samples: List[Sample]):
         """Print dataset statistics."""
@@ -851,13 +1006,16 @@ class DatasetBuilder:
             metadata["stats"]["by_source"][sample.source] = \
                 metadata["stats"]["by_source"].get(sample.source, 0) + 1
 
-        # Build dataset structure with quality metadata
+        # Build dataset structure with quality metadata and pre-generated mutants
         samples_data = []
         for s in samples:
             sample_dict = s.to_dict()
             # Add quality metadata if present
             if hasattr(s, '_quality') and s._quality:
                 sample_dict['quality'] = s._quality
+            # Add pre-generated mutants if present
+            if hasattr(s, '_mutants') and s._mutants:
+                sample_dict['mutants'] = s._mutants
             samples_data.append(sample_dict)
 
         # Add quality stats to metadata if available
@@ -886,12 +1044,14 @@ class DatasetBuilder:
 
         for difficulty, samples in splits.items():
             output_path = output_dir / f"{difficulty}.json"
-            # Include quality metadata in split files
+            # Include quality metadata and pre-generated mutants in split files
             samples_data = []
             for s in samples:
                 sample_dict = s.to_dict()
                 if hasattr(s, '_quality') and s._quality:
                     sample_dict['quality'] = s._quality
+                if hasattr(s, '_mutants') and s._mutants:
+                    sample_dict['mutants'] = s._mutants
                 samples_data.append(sample_dict)
             with open(output_path, 'w') as f:
                 json.dump(samples_data, f, indent=2)
@@ -932,6 +1092,10 @@ Examples:
                         help="Only validate existing dataset")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed (default: 42)")
+    parser.add_argument("--min-samples", type=int, default=5,
+                        help="Minimum samples per CWE to include (default: 5)")
+    parser.add_argument("--skip-vd-validation", action="store_true",
+                        help="Skip VD validation (tests pass on secure, fail on insecure)")
 
     args = parser.parse_args()
 
@@ -994,7 +1158,9 @@ Examples:
     samples = builder.build(
         apply_contamination_prevention=not args.skip_contamination,
         validate=not args.skip_validation,
-        deep_validate=args.deep_validate
+        deep_validate=args.deep_validate,
+        min_samples_per_cwe=args.min_samples,
+        skip_vd_validation=args.skip_vd_validation
     )
 
     # Save main dataset

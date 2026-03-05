@@ -2,6 +2,8 @@
 
 A benchmark for evaluating LLM-generated security tests using mutation testing.
 
+**Version:** 2.5.0
+
 ## Overview
 
 SecMutBench evaluates whether Large Language Models (LLMs) can generate effective security tests that detect vulnerabilities in code. Unlike existing benchmarks that assess secure code generation, SecMutBench focuses on **security test generation** evaluated through **mutation testing**.
@@ -10,47 +12,51 @@ SecMutBench evaluates whether Large Language Models (LLMs) can generate effectiv
 
 - **Security-Focused**: Samples mapped to Common Weakness Enumeration (CWE) vulnerability types
 - **Mutation Testing Evaluation**: Test quality measured by ability to kill security-relevant mutants
-- **10 Security Mutation Operators**: Custom operators that inject realistic vulnerability patterns
+- **32 Security Mutation Operators**: Custom operators that inject realistic vulnerability patterns with multiple variants
+- **Mock-State Observability**: Layer 1.5 classification detecting tests that access security-relevant mock attributes
+- **Pre-generated Mutants**: Deterministic mutant sets stored in dataset for reproducible evaluation
+- **Multi-Modal Evaluation**: Combines mutation testing with LLM-as-judge metrics
+- **CWE-Strict Operator Mapping**: Operators only fire on samples matching their target CWEs (no cross-contamination)
 
 ## Statistics
 
 | Metric | Value |
 |--------|-------|
-| Total Samples | 155 |
-| CWE Types | 22 |
+| Total Samples | 304 |
+| Viable CWE Types | 24 |
 | Languages | Python |
-| Mutation Operators | 10 |
+| Core Mutation Operators | 18 |
+| Extended Operators | 14 |
+| Total Operators | 32 |
+| CWE Mappings | 49 |
 
-### Data Sources
-
-| Source | Samples | Description |
-|--------|---------|-------------|
-| SecMutBench | 50 | Original samples created for this benchmark |
-| SecurityEval | 59 | From s2e-lab/SecurityEval on HuggingFace |
-| CyberSecEval | 46 | Python samples from Meta's PurpleLlama |
-
-### CWE Distribution (Top 10)
+### CWE Distribution
 
 | CWE | Name | Samples |
 |-----|------|---------|
-| CWE-78 | OS Command Injection | 30 |
-| CWE-89 | SQL Injection | 15 |
-| CWE-22 | Path Traversal | 12 |
-| CWE-20 | Improper Input Validation | 12 |
-| CWE-79 | Cross-Site Scripting (XSS) | 11 |
-| CWE-798 | Hardcoded Credentials | 11 |
-| CWE-502 | Insecure Deserialization | 10 |
-| CWE-327 | Weak Cryptography | 7 |
-| CWE-611 | XXE Injection | 6 |
-| CWE-94 | Code Injection | 5 |
+| CWE-22 | Path Traversal | 60 |
+| CWE-79 | Cross-Site Scripting (XSS) | 54 |
+| CWE-78 | OS Command Injection | 39 |
+| CWE-502 | Insecure Deserialization | 32 |
+| CWE-327 | Weak Cryptography | 29 |
+| CWE-352 | Cross-Site Request Forgery | 29 |
+| CWE-918 | SSRF | 22 |
+| CWE-94 | Code Injection | 10 |
+| CWE-611 | XXE Injection | 7 |
+| CWE-306 | Missing Authentication | 6 |
+| CWE-89 | SQL Injection | 5 |
+| CWE-287 | Improper Authentication | 4 |
+| CWE-798 | Hardcoded Credentials | 3 |
+| CWE-20 | Improper Input Validation | 2 |
+| CWE-319 | Cleartext Transmission | 2 |
 
 ### Difficulty Distribution
 
 | Difficulty | Samples |
 |------------|---------|
-| Easy | 73 |
-| Medium | 69 |
-| Hard | 13 |
+| Easy | 25 |
+| Medium | 205 |
+| Hard | 74 |
 
 ## Quick Start
 
@@ -61,17 +67,26 @@ SecMutBench evaluates whether Large Language Models (LLMs) can generate effectiv
 git clone https://github.com/your-org/SecMutBench.git
 cd SecMutBench
 
-# Install dependencies
+# Install dependencies (requires Python 3.8+)
 pip install -r requirements.txt
+```
 
-# Generate difficulty splits
-python scripts/generate_splits.py
+### Check Version
+
+```bash
+python -m evaluation.evaluate --version
+# SecMutBench v2.5.0
+# Benchmark: v2.5
+# Python: 3.11.5
+# Dependencies: ...
 ```
 
 ### Basic Usage
 
 ```python
-from evaluation import load_benchmark, evaluate_generated_tests
+from evaluation import load_benchmark, evaluate_generated_tests, __version__
+
+print(f"SecMutBench v{__version__}")
 
 # Load benchmark
 benchmark = load_benchmark()
@@ -81,75 +96,155 @@ sample = benchmark[0]
 generated_tests = """
 def test_sql_injection():
     result = get_user_by_id("1 OR 1=1")
-    assert result is None or len(result) <= 1
+    assert "injection" in str(db.last_query).lower() or len(result) <= 1
 """
 
 results = evaluate_generated_tests(sample, generated_tests)
 print(f"Mutation Score: {results['metrics']['mutation_score']:.2%}")
+print(f"Security MS: {results['metrics'].get('security_mutation_score', 0):.2%}")
 print(f"Vulnerability Detected: {results['metrics']['vuln_detected']}")
 ```
 
-### Evaluate Reference Tests
+### Run Evaluation
 
 ```bash
-python evaluation/evaluate.py --model reference
-```
+# Evaluate reference tests
+python -m evaluation.evaluate --model reference
 
-### Filter by Difficulty or CWE
+# Filter by difficulty or CWE
+python -m evaluation.evaluate --difficulty easy
+python -m evaluation.evaluate --cwe CWE-89
 
-```bash
-# Easy samples only
-python evaluation/evaluate.py --difficulty easy
+# Run with LLM baselines
+python baselines/run_llm_baselines.py --provider ollama --model qwen2.5-coder:7b --max-samples 30
 
-# SQL Injection samples only
-python evaluation/evaluate.py --cwe CWE-89
+# Run static analysis baseline
+python baselines/run_static_analysis.py --tool bandit
 ```
 
 ## Security Mutation Operators
 
-| Operator | Description | Target CWEs |
-|----------|-------------|-------------|
-| PSQLI | Parameterized SQL to string injection | CWE-89 |
-| RVALID | Remove input validation/sanitization | CWE-20, CWE-79 |
-| CMDINJECT | Enable shell command injection | CWE-78 |
-| PATHCONCAT | Unsafe path concatenation | CWE-22 |
-| RMAUTH | Remove authentication checks | CWE-287 |
-| HARDCODE | Inject hardcoded credentials | CWE-798 |
-| WEAKCRYPTO | Use weak cryptographic algorithms | CWE-327 |
-| RHTTPO | Remove HttpOnly cookie flag | CWE-1004 |
-| RENCRYPT | Remove encryption/TLS | CWE-319 |
-| DESERIAL | Unsafe deserialization | CWE-502 |
+### Core Operators (18)
+
+| Operator | Description | Target CWEs | Variants |
+|----------|-------------|-------------|----------|
+| PSQLI | Parameterized SQL to string concatenation | CWE-89 | 4 (f-string, .format, %, +) |
+| RVALID | Remove input validation/sanitization | CWE-20, CWE-79 | 1 |
+| CMDINJECT | Enable shell command injection | CWE-78 | 9 (shell=True, os.system, os.popen, etc.) |
+| PATHCONCAT | Unsafe path concatenation | CWE-22 | 1 |
+| RMAUTH | Remove authentication checks | CWE-287, CWE-306 | 1 |
+| HARDCODE | Inject hardcoded credentials | CWE-798 | 5 (admin123, password, 123456, etc.) |
+| WEAKCRYPTO | Use weak cryptographic algorithms (MD5/SHA1) | CWE-327 | 1 |
+| WEAKRAND | Use weak random (random instead of secrets) | CWE-338 | 1 |
+| RHTTPO | Remove HttpOnly cookie flag | CWE-1004 | 1 |
+| RENCRYPT | Remove encryption/TLS | CWE-319 | 1 |
+| DESERIAL | Unsafe deserialization (pickle.loads) | CWE-502 | 1 |
+| YAMLLOAD | Unsafe YAML load | CWE-502 | 1 |
+| XXENABLE | Enable external XML entities | CWE-611 | 1 |
+| SSRFOPEN | Remove SSRF URL validation | CWE-918 | 1 |
+| EVALINJECT | Enable eval/exec injection | CWE-94, CWE-95 | 1 |
+| JWTVERIFY | Disable JWT signature verification | CWE-287 | 1 |
+| BCRYPTCOST | Reduce bcrypt cost factor | CWE-327 | 1 |
+| ENVLEAK | Expose environment secrets | CWE-798 | 1 |
+
+### Extended Operators (14 new in v2.5.0)
+
+| Operator | Description | Target CWEs | Has Source Material |
+|----------|-------------|-------------|---------------------|
+| OPENREDIRECT | Remove redirect URL validation | CWE-601 | ✓ |
+| NOCERTVALID | Disable SSL certificate verification | CWE-295 | ✓ |
+| INFOEXPOSE | Expose sensitive data in errors | CWE-209 | ✓ |
+| REGEXDOS | Introduce ReDoS-vulnerable patterns | CWE-400, CWE-1333 | ✓ |
+| MISSINGAUTH | Remove authorization checks | CWE-862 | ✓ |
+| INSUFFLOG | Remove security logging | CWE-778 | ✗ |
+| NULLCHECK | Remove null pointer checks | CWE-476 | ✗ |
+| MEMLEAK | Remove resource cleanup | CWE-401 | ✗ |
+| INTOVERFLOW | Remove integer overflow checks | CWE-190 | ✗ |
+| RACECOND | Remove synchronization | CWE-362 | ✗ |
+| PRIVESC | Weaken permission checks | CWE-269 | ✗ |
+| SESSIONFIX | Disable session regeneration | CWE-384 | ✗ |
+| XMLINJECT | Remove XML special char escaping | CWE-91 | ✗ |
 
 ## Project Structure
 
 ```
 SecMutBench/
 ├── data/
-│   ├── samples.json           # Main benchmark (155 samples)
-│   ├── metadata.json          # CWE descriptions, statistics
-│   ├── raw_securityeval.json  # Raw SecurityEval data
-│   ├── raw_cyberseceval.json  # Raw CyberSecEval data
+│   ├── dataset.json           # Main benchmark (304 samples, 737 mutants)
 │   └── splits/
-│       ├── easy.json          # 73 samples
-│       ├── medium.json        # 69 samples
-│       └── hard.json          # 13 samples
+│       ├── easy.json          # 25 samples
+│       ├── medium.json        # 205 samples
+│       └── hard.json          # 74 samples
 ├── operators/
-│   ├── security_operators.py  # Mutation operator implementations
-│   └── operator_registry.py   # Operator-to-CWE mappings
+│   ├── security_operators.py  # 32 mutation operator implementations
+│   └── operator_registry.py   # Operator-to-CWE mappings (49 CWEs)
 ├── evaluation/
-│   ├── evaluate.py            # Main evaluation script
+│   ├── evaluate.py            # Main evaluation orchestrator
 │   ├── mutation_engine.py     # Mutant generation
-│   ├── test_runner.py         # Test execution
-│   └── metrics.py             # Score calculation
+│   ├── test_runner.py         # Subprocess + pytest test execution
+│   ├── conftest_template.py   # Mock injection templates
+│   ├── metrics.py             # Score calculation
+│   ├── prompts.py             # Prompt templates (including ablation)
+│   ├── llm_judge.py           # LLM-as-judge evaluation
+│   ├── version.py             # Version tracking for reproducibility
+│   └── mocks/                 # 15 mock objects for safe test execution
+│       ├── mock_database.py   # SQL injection testing
+│       ├── mock_subprocess.py # Command injection testing
+│       ├── mock_filesystem.py # Path traversal testing
+│       └── ...
+├── baselines/
+│   ├── run_llm_baselines.py   # LLM baseline evaluation
+│   └── run_static_analysis.py # Bandit/Semgrep baselines
 ├── scripts/
-│   ├── download_sources.py    # Download seed datasets
-│   ├── transform_datasets.py  # Transform SecurityEval/CyberSecEval
-│   ├── validate.py            # Validate samples
-│   └── generate_splits.py     # Generate difficulty splits
-├── Dockerfile
+│   ├── dataset_builder.py     # Main dataset orchestrator
+│   ├── sample_generator.py    # Sample generation from templates
+│   ├── source_ingestion.py    # Multi-source data loading
+│   ├── compute_mutant_validity.py    # Mutant validity analysis
+│   ├── compute_test_validity.py      # Test validity aggregation
+│   ├── evaluate_no_mocks.py          # Mock vs no-mock comparison
+│   ├── evaluate_reference_tests.py   # Reference test baseline
+│   ├── run_semgrep_baseline.py       # Semgrep static analysis
+│   └── sample_kills_for_audit.py     # Manual audit sampling
 ├── requirements.txt
 └── README.md
 ```
+
+## Kill Classification
+
+SecMutBench classifies mutant kills into categories to distinguish genuine security awareness from accidental detection:
+
+| Category | Description | Layer |
+|----------|-------------|-------|
+| **Semantic** | AssertionError with security-relevant assertions | Layer 1 (keywords) or Layer 1.5 (mock observability) |
+| **Incidental** | AssertionError without security terms | Layer 1 |
+| **Crash** | ImportError, TypeError, SyntaxError, etc. | Layer 0 |
+
+### Mock-State Observability (Layer 1.5)
+
+Tests that access security-relevant mock attributes are classified as semantic kills, even without explicit security keywords:
+
+```python
+# This test accesses db.last_params - a security-relevant attribute
+def test_sql_injection():
+    get_user("admin' OR '1'='1")
+    assert "?" in db.last_query  # Checks for parameterized query
+```
+
+**Tracked Security Attributes by Mock:**
+
+| Mock | Security Attributes |
+|------|---------------------|
+| `db` | `last_query`, `last_params`, `query_count` |
+| `subprocess` | `last_shell`, `last_command`, `injection_detected`, `dangerous_command_detected` |
+| `fs` | `last_path`, `base_dir` |
+| `crypto` | `last_algorithm`, `weak_algorithm_used`, `strong_algorithm_used`, `algorithms_used` |
+| `http` | `last_url`, `ssrf_attempted`, `last_method` |
+| `xml` | `last_xml`, `external_entities_resolved`, `dtd_processed` |
+| `pickle` | `last_data`, `unsafe_load_called`, `load_count` |
+| `yaml` | `last_data`, `unsafe_load_called`, `safe_loader_used`, `load_count` |
+| `auth` | `last_username`, `last_password`, `last_token`, `auth_attempts`, `failed_attempts` |
+| `env` | `last_key`, `sensitive_accessed`, `access_log` |
+| `eval` | `last_code`, `unsafe_eval_called`, `unsafe_exec_called`, `injection_detected` |
 
 ## Evaluation Metrics
 
@@ -200,6 +295,41 @@ docker run secmutbench --model reference
 
 # Run with specific filters
 docker run secmutbench --difficulty easy --cwe CWE-89
+```
+
+## Dataset Building
+
+Build or rebuild the dataset with configurable options:
+
+```bash
+# Build dataset with default settings (300 samples, min 5 per CWE)
+python scripts/dataset_builder.py --target 300
+
+# Build with lower CWE threshold to include rare vulnerability types
+python scripts/dataset_builder.py --target 300 --min-samples 2
+
+# Validate existing dataset without rebuilding
+python scripts/dataset_builder.py --validate-only
+
+# Skip contamination prevention (faster, for testing)
+python scripts/dataset_builder.py --target 300 --skip-contamination
+```
+
+## Analysis Scripts
+
+Scripts for analyzing evaluation results and dataset quality:
+
+```bash
+# Analyze mutant validity (compilability/executability)
+python scripts/compute_mutant_validity.py
+python scripts/compute_mutant_validity.py --test-execution  # Also test execution
+
+# Analyze test validity from evaluation results
+python scripts/compute_test_validity.py --results results/evaluation.json
+
+# Sample kills for manual audit
+python scripts/sample_kills_for_audit.py results/evaluation.json --samples-per-category 30
+python scripts/sample_kills_for_audit.py results/evaluation.json --format csv --output audit.csv
 ```
 
 ## Contamination Prevention

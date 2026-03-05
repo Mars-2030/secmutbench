@@ -6,13 +6,13 @@ Provides version information for reproducibility and compatibility checking.
 
 import sys
 import os
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
 # Core versions
-__version__ = "1.0.0"
-__benchmark_version__ = "v1.0"  # Dataset version
-__schema_version__ = "1.0"      # Sample schema version
+__version__ = "2.5.0"
+__benchmark_version__ = "v2.5"  # Dataset version (24 viable CWEs, 32 operators, 49 CWE mappings)
+__schema_version__ = "2.1"      # Sample schema version (added mock_security_access)
 
 # Minimum required versions of key dependencies
 REQUIRED_VERSIONS = {
@@ -94,7 +94,7 @@ def get_version_info() -> Dict:
     }
 
 
-def check_compatibility() -> tuple[bool, list[str]]:
+def check_compatibility() -> Tuple[bool, List[str]]:
     """
     Check if the current environment meets requirements.
 
