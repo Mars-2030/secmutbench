@@ -1,5 +1,162 @@
 # SecMutBench Changelog
 
+## [2.5.2] - 2026-03-07
+
+### Summary
+Added batch API support for LLM-as-Judge evaluation (50% cost savings), separated dataset building from evaluation pipeline, updated OpenAI judge model to gpt-5.2, and added provider selection for model evaluation.
+
+---
+
+### New Features
+
+#### AC. Batch API for LLM-as-Judge
+- **Files:** `baselines/run_llm_baselines.py`, `evaluation/llm_judge.py`, `run_evaluation.sh`
+- **Problem:** LLM-as-Judge evaluations made sequential API calls, which is expensive for large evaluations.
+- **Fix:** Added `--batch-judge` flag that uses batch API for judge evaluations:
+  - OpenAI/Anthropic batch APIs provide 50% cost savings
+  - All security + quality evaluations submitted as batch
+  - Integrated with existing `evaluate_batch_api()` in `llm_judge.py`
+- **Usage:** `./run_evaluation.sh --judge openai --batch-judge --samples 100`
+
+#### AD. Provider Selection for Model Evaluation
+- **Files:** `run_evaluation.sh`
+- **Problem:** Script was hardcoded to use Ollama for model evaluation.
+- **Fix:** Added `--provider` option to select model provider:
+  - Supports: `ollama`, `openai`, `anthropic`, `google`
+  - Checks appropriate API keys based on provider
+- **Usage:** `./run_evaluation.sh --provider anthropic --models "claude-sonnet-4-5-20250929"`
+
+#### AE. Batch API for Test Generation
+- **Files:** `run_evaluation.sh`
+- **Problem:** No batch mode support in evaluation script for API providers.
+- **Fix:** Added `--batch` flag for test generation with API providers (50% cost savings).
+- **Usage:** `./run_evaluation.sh --provider openai --models "gpt-4o" --batch`
+
+---
+
+### Improvements
+
+#### AF. Separated Dataset Building from Evaluation
+- **Files:** `run_evaluation.sh`, `build_db.sh`
+- **Problem:** `run_evaluation.sh` contained dataset building options that duplicated `build_db.sh`.
+- **Fix:**
+  - Removed dataset building options from `run_evaluation.sh` (`--rebuild-dataset`, `--target`, `--validate-only`, `--skip-contamination`)
+  - Simplified to 5 steps (was 7)
+  - Updated to point to `./build_db.sh` as prerequisite
+- **New Workflow:**
+  ```bash
+  ./build_db.sh 500          # Build dataset
+  ./run_evaluation.sh ...    # Run evaluation
+  ```
+
+#### AG. Updated OpenAI Judge Model
+- **Files:** `evaluation/llm_judge.py`
+- **Change:** Updated default OpenAI judge model from `gpt-5` to `gpt-5.2-2025-12-11`
+- **Configurable:** Set `SECMUTBENCH_OPENAI_MODEL` environment variable to override
+
+---
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `run_evaluation.sh` | Added `--provider`, `--batch`, `--batch-judge`; removed dataset building options |
+| `baselines/run_llm_baselines.py` | Added `--batch-judge` argument, `batch_judge` parameter to `evaluate_model()` |
+| `evaluation/llm_judge.py` | Updated `DEFAULT_OPENAI_MODEL` to `gpt-5.2-2025-12-11` |
+
+---
+
+## [2.5.1] - 2026-03-04
+
+### Summary
+Fixed critical VD (Vulnerability Detection) validation failures that were dropping samples at build time. Improved test generation for CWE-79 (XSS), CWE-352 (CSRF), CWE-22 (Path Traversal). Added Python code filter for CyberSecEval. Dataset size increased from 38 to 104 samples.
+
+---
+
+### Bug Fixes
+
+#### X. CWE-79 XSS Test False Positives
+- **Files:** `scripts/sample_generator.py`
+- **Problem:** XSS test used string containment check (`"onerror=" not in str(result)`) which failed on secure code that properly escaped HTML. When `html.escape()` converts `<img onerror=...>` to `&lt;img onerror=...&gt;`, the literal string "onerror=" is still present (only `<>` are escaped), causing false assertion failures.
+- **Fix:** Replaced string containment with regex patterns that only match UNESCAPED HTML tags:
+  ```python
+  assert not re.search(r'<script[^>]*>', output, re.I)
+  assert not re.search(r'<img[^>]+onerror\s*=', output, re.I)
+  ```
+- **Impact:** +49 CWE-79 samples (from 0)
+
+#### Y. CWE-352 CSRF Test Dict Request Support
+- **Files:** `scripts/sample_generator.py`
+- **Problem:** CSRF test used `MockRequest` class but SecCodePLT samples expect dict-style requests with `{"headers": {}, "body": {...}}`. Test also only checked for exceptions, missing secure code that returns `False` to reject unauthenticated requests.
+- **Fix:**
+  - Detect request format via `inspect.signature()` annotation check
+  - Support both `MockRequest` object and dict formats
+  - Check rejection via: exception raised OR returns `False`/`None` OR error message in return value
+- **Impact:** +8 CWE-352 samples (from 6 to 14)
+
+#### Z. CWE-22 Path Traversal Exception Handling
+- **Files:** `scripts/sample_generator.py`
+- **Problem:** Path traversal test only caught `ValueError`, `PermissionError`, `FileNotFoundError`. SecCodePLT samples raise generic `Exception` with messages like "Access to path ... is not allowed".
+- **Fix:** Catch all exceptions and check for security-related keywords in message:
+  ```python
+  except (ValueError, PermissionError, FileNotFoundError, Exception) as e:
+      if any(word in str(e).lower() for word in ['not allowed', 'denied', 'forbidden', ...]):
+          traversal_blocked = True
+  ```
+- **Impact:** +9 CWE-22 samples (from 16 to 25)
+
+#### AA. CyberSecEval Non-Python Code Filter
+- **Files:** `scripts/source_handlers.py`
+- **Problem:** CyberSecEval handler labeled all code as "python" but some samples contained Perl/shell code (using `system()`, `getcwd()`, `chdir()`, backticks). These caused test collection errors.
+- **Fix:** Added `_is_python_code()` filter checking for:
+  - Required: `def ` (Python function)
+  - Rejected: `system("`, backticks, `$_`, `my $`, `#!/` shebang, etc.
+- **Impact:** Removed 69 non-Python samples, eliminated 19 test collection errors
+
+#### BB. Identity Parameter Expansion
+- **Files:** `scripts/sample_generator.py`
+- **Problem:** CWE-22 samples use parameters like `account_id`, `user_key`, `dir_identifier` as dictionary lookup keys (e.g., `user_directories["user123"]`). Missing params got default `"test_value"` causing KeyError.
+- **Fix:** Added 25+ identity-related params to `INFRASTRUCTURE_MOCK_VALUES`:
+  ```python
+  'uid', 'uname', 'username', 'user_name', 'usr', 'user_token', 'id_user', 'usr_id',
+  'user_key', 'dir_id', 'dir_key', 'directory_key', 'dir_identifier', 'resource_id',
+  'resource_key', 'config_id', 'config_key', 'identifier', 'key', ...
+  ```
+- **Impact:** Reduced CWE-22 KeyError from 50 to ~10
+
+---
+
+### Dataset Statistics
+
+| Metric | v2.5.0 | v2.5.1 |
+|--------|--------|--------|
+| Total Samples | 38 | 104 |
+| CWE Types | 8 | 9 |
+| Pre-generated Mutants | 133 | 299 |
+| CWE-79 (XSS) | 0 | 50 |
+| CWE-22 (Path Traversal) | 17 | 25 |
+| CWE-352 (CSRF) | 6 | 13 |
+
+**By Source:**
+| Source | Count |
+|--------|-------|
+| SecCodePLT | 79 |
+| SecMutBench | 23 |
+| SecurityEval | 2 |
+
+---
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `scripts/sample_generator.py` | Fixed CWE-79/352/22 test templates, added 25+ identity params |
+| `scripts/source_handlers.py` | Added `_is_python_code()` filter to CyberSecEvalHandler |
+| `data/dataset.json` | Regenerated (104 samples, 299 mutants) |
+| `data/splits/*.json` | Regenerated |
+
+---
+
 ## [2.5.0] - 2026-03-04
 
 ### Summary

@@ -41,10 +41,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from evaluation.evaluate import evaluate_generated_tests, evaluate_reference_tests, load_benchmark
 from evaluation.llm_judge import create_evaluator, format_multimodal_report
-from evaluation.prompts import format_test_generation_prompt
+from evaluation.prompts import (
+    format_test_generation_prompt,
+    format_prompt_no_hint,
+    format_prompt_cwe_id_only,
+)
 from evaluation.metrics import calculate_kill_breakdown
+from evaluation.version import get_version_info, __version__
 from collections import defaultdict
 import random as random_module
+
+# Batch API support (lazy import to avoid dependency issues)
+def get_batch_processor(provider: str):
+    """Lazy import batch processor."""
+    from baselines.batch_api import create_batch_processor, BatchRequest, prepare_batch_requests
+    return create_batch_processor, BatchRequest, prepare_batch_requests
 
 
 def stratified_sample(benchmark: List[Dict], max_samples: int, seed: int = 42) -> List[Dict]:
@@ -135,7 +146,8 @@ API_MODELS = [
     {"name": "gpt-5", "provider": "openai"},
     {"name": "gpt-5-mini-2025-08-07", "provider": "openai"},
     {"name": "claude-sonnet-4-5-20250929", "provider": "anthropic"},
-    {"name": "gemini-3-flash-preview", "provider": "google"},
+    {"name": "claude-opus-4-6", "provider": "anthropic"},
+    {"name": "gemini-3.0-flash", "provider": "google"},
     {"name": "gemini-2.5-pro", "provider": "google"},
 ]
 
@@ -283,15 +295,44 @@ def call_google(model: str, prompt: str, max_retries: int = 3) -> str:
     return ""
 
 
-def generate_tests(model: str, provider: str, sample: Dict, timeout: int = 300) -> str:
-    """Generate security tests using specified model."""
-    # Use unified prompt from evaluation.prompts
-    prompt = format_test_generation_prompt(
-        code=sample["secure_code"],
-        cwe=sample["cwe"],
-        cwe_name=sample.get("cwe_name", "vulnerability"),
-        include_mock_env=True,
-    )
+def generate_tests(
+    model: str,
+    provider: str,
+    sample: Dict,
+    timeout: int = 300,
+    prompt_variant: str = "full",
+) -> str:
+    """Generate security tests using specified model.
+
+    Args:
+        model: Model name
+        provider: Provider (ollama, openai, anthropic, google)
+        sample: Benchmark sample
+        timeout: Request timeout
+        prompt_variant: Prompt variant for ablation study:
+            - "full": Complete prompt with mock docs, attack vectors (default)
+            - "no-hint": Generic "write tests" without security context
+            - "cwe-only": Just CWE ID, no detailed guidance
+    """
+    # Select prompt based on variant
+    if prompt_variant == "no-hint":
+        prompt = format_prompt_no_hint(
+            code=sample["secure_code"],
+            entry_point=sample.get("entry_point", "function"),
+        )
+    elif prompt_variant == "cwe-only":
+        prompt = format_prompt_cwe_id_only(
+            code=sample["secure_code"],
+            cwe=sample["cwe"],
+            entry_point=sample.get("entry_point", "function"),
+        )
+    else:  # "full" or default
+        prompt = format_test_generation_prompt(
+            code=sample["secure_code"],
+            cwe=sample["cwe"],
+            cwe_name=sample.get("cwe_name", "vulnerability"),
+            include_mock_env=True,
+        )
 
     if provider == "ollama":
         return call_ollama(model, prompt, timeout=timeout)
@@ -335,10 +376,21 @@ def evaluate_model(
     start_sample: int = 0,
     max_mutants: int = 10,
     timeout: int = 300,
+    prompt_variant: str = "full",
+    batch_judge: bool = False,
 ) -> ModelResult:
-    """Evaluate a single model on the benchmark."""
+    """Evaluate a single model on the benchmark.
+
+    Args:
+        prompt_variant: Prompt variant for ablation study:
+            - "full": Complete prompt with mock docs, attack vectors (default)
+            - "no-hint": Generic "write tests" without security context
+            - "cwe-only": Just CWE ID, no detailed guidance
+        batch_judge: Use batch API for LLM-as-Judge (50% cost savings)
+    """
     print(f"\n{'='*60}")
     print(f"Evaluating: {model} ({provider})")
+    print(f"Prompt variant: {prompt_variant}")
     if start_sample > 0:
         print(f"Resuming from sample {start_sample}")
     print(f"{'='*60}")
@@ -357,7 +409,7 @@ def evaluate_model(
 
         try:
             # Generate tests
-            raw_response = generate_tests(model, provider, sample, timeout=timeout)
+            raw_response = generate_tests(model, provider, sample, timeout=timeout, prompt_variant=prompt_variant)
             generated_tests = extract_test_code(raw_response)
 
             if not generated_tests.strip():
@@ -484,6 +536,7 @@ def evaluate_model(
     # Run LLM-as-Judge if requested
     if use_judge and results:
         print(f"\n  Running LLM-as-Judge ({judge_provider})...")
+        print(f"  Total samples to judge: {len(results)} (2 API calls each = {len(results) * 2} total)")
         try:
             evaluator = create_evaluator(provider=judge_provider)
 
@@ -491,21 +544,63 @@ def evaluate_model(
             quality_scores = []
             composite_scores = []
 
-            for r in results:
-                sample = next(s for s in benchmark if s["id"] == r["sample_id"])
-                judge_result = evaluator.evaluate(
-                    sample,
-                    r["generated_tests"],
-                    {"metrics": r["metrics"]}
+            if batch_judge:
+                # Use batch API for 50% cost savings
+                print(f"  Using BATCH mode for judge (50% cost savings)...")
+
+                # Prepare data for batch evaluation
+                samples_to_judge = []
+                tests_to_judge = []
+                exec_results_to_judge = []
+
+                for r in results:
+                    sample = next(s for s in benchmark if s["id"] == r["sample_id"])
+                    samples_to_judge.append(sample)
+                    tests_to_judge.append(r["generated_tests"])
+                    exec_results_to_judge.append({"metrics": r["metrics"]})
+
+                # Run batch evaluation
+                judge_results = evaluator.evaluate_batch_api(
+                    samples=samples_to_judge,
+                    generated_tests_list=tests_to_judge,
+                    execution_results_list=exec_results_to_judge,
+                    provider=judge_provider,
                 )
 
-                if judge_result.security_relevance:
-                    security_scores.append(judge_result.security_relevance.score)
-                if judge_result.test_quality:
-                    quality_scores.append(judge_result.test_quality.score)
-                composite_scores.append(judge_result.composite_score)
+                # Extract scores from batch results
+                for judge_result in judge_results:
+                    if judge_result.security_relevance:
+                        security_scores.append(judge_result.security_relevance.score)
+                    if judge_result.test_quality:
+                        quality_scores.append(judge_result.test_quality.score)
+                    composite_scores.append(judge_result.composite_score)
 
-                time.sleep(0.5)  # Rate limiting
+                print(f"  Batch judge complete: {len(judge_results)} samples evaluated")
+            else:
+                # Sequential evaluation (original behavior)
+                for i, r in enumerate(results, 1):
+                    print(f"    [{i}/{len(results)}] Judging {r['sample_id'][:12]}...", end=" ", flush=True)
+                    sample = next(s for s in benchmark if s["id"] == r["sample_id"])
+                    judge_result = evaluator.evaluate(
+                        sample,
+                        r["generated_tests"],
+                        {"metrics": r["metrics"]}
+                    )
+
+                    if judge_result.security_relevance:
+                        security_scores.append(judge_result.security_relevance.score)
+                        sec_score = judge_result.security_relevance.score
+                    else:
+                        sec_score = 0
+                    if judge_result.test_quality:
+                        quality_scores.append(judge_result.test_quality.score)
+                        qual_score = judge_result.test_quality.score
+                    else:
+                        qual_score = 0
+                    composite_scores.append(judge_result.composite_score)
+                    print(f"Security: {sec_score:.0%}, Quality: {qual_score:.0%}")
+
+                    time.sleep(0.5)  # Rate limiting
 
             if security_scores:
                 model_result.avg_security_relevance = sum(security_scores) / len(security_scores)
@@ -516,6 +611,158 @@ def evaluate_model(
 
         except Exception as e:
             print(f"  Judge error: {e}")
+
+    return model_result
+
+
+def evaluate_model_batch(
+    model: str,
+    provider: str,
+    benchmark: List[Dict],
+    max_samples: Optional[int] = None,
+    max_mutants: int = 10,
+    prompt_variant: str = "full",
+    poll_interval: int = 60,
+) -> ModelResult:
+    """
+    Evaluate a model using batch API for cost savings (50% for Anthropic/OpenAI).
+
+    This submits all requests as a batch and waits for completion.
+    Ideal for large evaluations where 24h turnaround is acceptable.
+    """
+    print(f"\n{'='*60}")
+    print(f"BATCH Evaluating: {model} ({provider})")
+    print(f"Prompt variant: {prompt_variant}")
+    print(f"{'='*60}")
+
+    create_batch_processor, BatchRequest, prepare_batch_requests = get_batch_processor(provider)
+
+    start_time = time.time()
+    samples_to_eval = benchmark[:max_samples] if max_samples else benchmark
+
+    # Prepare batch requests
+    print(f"  Preparing {len(samples_to_eval)} batch requests...")
+
+    def format_prompt(sample: Dict) -> str:
+        if prompt_variant == "no-hint":
+            return format_prompt_no_hint(
+                code=sample["secure_code"],
+                entry_point=sample.get("entry_point", "function"),
+            )
+        elif prompt_variant == "cwe-only":
+            return format_prompt_cwe_id_only(
+                code=sample["secure_code"],
+                cwe=sample["cwe"],
+                entry_point=sample.get("entry_point", "function"),
+            )
+        else:  # "full"
+            return format_test_generation_prompt(
+                code=sample["secure_code"],
+                cwe=sample["cwe"],
+                cwe_name=sample.get("cwe_name", "vulnerability"),
+                include_mock_env=True,
+            )
+
+    batch_requests = prepare_batch_requests(samples_to_eval, format_prompt)
+
+    # Process batch
+    processor = create_batch_processor(provider)
+
+    def progress_callback(status: str, completed: int, total: int):
+        print(f"  Batch progress: {status} ({completed}/{total})")
+
+    print(f"  Submitting batch to {provider}...")
+    print(f"  Cost savings: 50% for Anthropic/OpenAI, concurrent for Google")
+
+    batch_result = processor.process_batch(
+        batch_requests,
+        model,
+        poll_interval=poll_interval,
+        progress_callback=progress_callback,
+    )
+
+    print(f"  Batch completed: {batch_result.completed_requests}/{batch_result.total_requests}")
+
+    # Map responses back to samples and evaluate
+    response_map = {r.custom_id: r for r in batch_result.responses}
+
+    results = []
+    errors = 0
+
+    for sample in samples_to_eval:
+        response = response_map.get(sample["id"])
+        if not response or not response.success:
+            errors += 1
+            continue
+
+        generated_tests = extract_test_code(response.content)
+        if not generated_tests.strip():
+            errors += 1
+            continue
+
+        # Evaluate with mutation testing
+        eval_result = evaluate_generated_tests(sample, generated_tests, max_mutants=max_mutants)
+
+        prompt = format_prompt(sample)
+        results.append({
+            "sample_id": sample["id"],
+            "cwe": sample["cwe"],
+            "cwe_name": sample.get("cwe_name", ""),
+            "difficulty": sample["difficulty"],
+            "mutation_operators": sample.get("mutation_operators", []),
+            "secure_code": sample["secure_code"],
+            "insecure_code": sample.get("insecure_code", ""),
+            "prompt": prompt,
+            "raw_response": response.content,
+            "generated_tests": generated_tests,
+            "metrics": eval_result["metrics"],
+            "mutant_details": eval_result.get("mutant_details", []),
+            "test_results": eval_result.get("test_results", []),
+            "reference_tests": sample.get("security_tests", ""),
+        })
+
+    # Calculate aggregates (same as evaluate_model)
+    if results:
+        mutation_scores = [r["metrics"].get("mutation_score") for r in results]
+        valid_mutation_scores = [ms for ms in mutation_scores if ms is not None]
+        vuln_detections = [1 if r["metrics"].get("vuln_detected", False) else 0 for r in results]
+        coverages = [r["metrics"].get("line_coverage", 0) or 0 for r in results]
+
+        kill_breakdown = calculate_kill_breakdown(results)
+        print(f"\n  Kill Breakdown: Semantic={kill_breakdown['semantic_kills']} "
+              f"Incidental={kill_breakdown['incidental_kills']} "
+              f"Crash={kill_breakdown['crash_kills']}")
+
+        secure_passes_count = sum(1 for r in results if r["metrics"].get("secure_passes", False))
+        vuln_detected_count = sum(1 for r in results if r["metrics"].get("vuln_detected", False))
+        sec_precision = vuln_detected_count / secure_passes_count if secure_passes_count > 0 else None
+
+        model_result = ModelResult(
+            model_name=model,
+            provider=provider,
+            samples_evaluated=len(results),
+            avg_mutation_score=sum(valid_mutation_scores) / len(valid_mutation_scores) if valid_mutation_scores else 0.0,
+            avg_vuln_detection=sum(vuln_detections) / len(vuln_detections),
+            avg_line_coverage=sum(coverages) / len(coverages),
+            avg_security_mutation_score=kill_breakdown.get("security_mutation_score"),
+            avg_incidental_score=kill_breakdown.get("incidental_score"),
+            avg_crash_score=kill_breakdown.get("crash_score"),
+            avg_security_precision=sec_precision,
+            evaluation_time=time.time() - start_time,
+            errors=errors,
+            detailed_results=results,
+        )
+    else:
+        model_result = ModelResult(
+            model_name=model,
+            provider=provider,
+            samples_evaluated=0,
+            avg_mutation_score=0,
+            avg_vuln_detection=0,
+            avg_line_coverage=0,
+            evaluation_time=time.time() - start_time,
+            errors=errors,
+        )
 
     return model_result
 
@@ -565,6 +812,7 @@ def save_results(results: List[ModelResult], output_dir: Path, ref_baseline: Opt
 
     # Convert to serializable format
     data = {
+        "version_info": get_version_info(),
         "timestamp": timestamp,
         "results": [asdict(r) for r in results],
         "reference_baseline": ref_baseline or {
@@ -606,6 +854,17 @@ def main():
     parser.add_argument("--timeout", type=int, default=300, help="Ollama request timeout in seconds (default: 300 = 5 min)")
     parser.add_argument("--skip-invalid", action="store_true",
                        help="Skip samples where quality.validation_passed is False")
+    parser.add_argument("--prompt-variant", choices=["full", "no-hint", "cwe-only", "all"],
+                       default="full",
+                       help="Prompt variant for ablation study: full (default), no-hint, cwe-only, or all")
+    parser.add_argument("--batch", action="store_true",
+                       help="Use batch API for 50%% cost savings (Anthropic/OpenAI). "
+                            "Submits all requests at once, results within 24h.")
+    parser.add_argument("--batch-poll-interval", type=int, default=60,
+                       help="Seconds between batch status checks (default: 60)")
+    parser.add_argument("--batch-judge", action="store_true",
+                       help="Use batch API for LLM-as-Judge (50%% cost savings). "
+                            "Requires --use-judge flag.")
 
     args = parser.parse_args()
 
@@ -664,31 +923,81 @@ def main():
         models_to_eval.append({"name": "gpt-5-mini-2025-08-07", "provider": "openai"})
     elif args.provider == "anthropic":
         models_to_eval.append({"name": "claude-sonnet-4-5-20250929", "provider": "anthropic"})
+        models_to_eval.append({"name": "claude-opus-4-6", "provider": "anthropic"})
     elif args.provider == "google":
-        models_to_eval.append({"name": "gemini-3-flash-preview", "provider": "google"})
+        models_to_eval.append({"name": "gemini-3.0-flash", "provider": "google"})
         models_to_eval.append({"name": "gemini-2.5-pro", "provider": "google"})
 
     print(f"\nModels to evaluate: {[m['name'] for m in models_to_eval]}")
 
+    # Determine prompt variants to run
+    if args.prompt_variant == "all":
+        prompt_variants = ["full", "no-hint", "cwe-only"]
+        print(f"Running ablation study with all prompt variants: {prompt_variants}")
+    else:
+        prompt_variants = [args.prompt_variant]
+
     # Run evaluations
     all_results = []
 
-    for model_config in models_to_eval:
-        try:
-            result = evaluate_model(
-                model=model_config["name"],
-                provider=model_config["provider"],
-                benchmark=benchmark,
-                use_judge=args.use_judge,
-                judge_provider=args.judge_provider,
-                max_samples=args.max_samples,
-                start_sample=args.start_sample,
-                max_mutants=args.max_mutants,
-                timeout=args.timeout,
-            )
-            all_results.append(result)
-        except Exception as e:
-            print(f"Failed to evaluate {model_config['name']}: {e}")
+    for variant in prompt_variants:
+        if len(prompt_variants) > 1:
+            print(f"\n{'#'*60}")
+            print(f"# ABLATION: Prompt variant = {variant}")
+            print(f"{'#'*60}")
+
+        for model_config in models_to_eval:
+            try:
+                # Check if batch mode is supported for this provider
+                if args.batch and model_config["provider"] in ["anthropic", "openai", "google"]:
+                    print(f"\n  Using BATCH API mode (50% cost savings for Anthropic/OpenAI)")
+                    result = evaluate_model_batch(
+                        model=model_config["name"],
+                        provider=model_config["provider"],
+                        benchmark=benchmark,
+                        max_samples=args.max_samples,
+                        max_mutants=args.max_mutants,
+                        prompt_variant=variant,
+                        poll_interval=args.batch_poll_interval,
+                    )
+                    # Run judge separately after batch generation (if requested)
+                    if args.use_judge:
+                        print("  Note: Running judge evaluation after batch generation...")
+                        # Judge will be run in a follow-up sequential call or with --batch-judge
+                elif args.batch and model_config["provider"] == "ollama":
+                    print(f"\n  Warning: --batch not supported for Ollama (using sequential mode)")
+                    result = evaluate_model(
+                        model=model_config["name"],
+                        provider=model_config["provider"],
+                        benchmark=benchmark,
+                        use_judge=args.use_judge,
+                        judge_provider=args.judge_provider,
+                        max_samples=args.max_samples,
+                        start_sample=args.start_sample,
+                        max_mutants=args.max_mutants,
+                        timeout=args.timeout,
+                        prompt_variant=variant,
+                        batch_judge=args.batch_judge,
+                    )
+                else:
+                    result = evaluate_model(
+                        model=model_config["name"],
+                        provider=model_config["provider"],
+                        benchmark=benchmark,
+                        use_judge=args.use_judge,
+                        judge_provider=args.judge_provider,
+                        max_samples=args.max_samples,
+                        start_sample=args.start_sample,
+                        max_mutants=args.max_mutants,
+                        timeout=args.timeout,
+                        prompt_variant=variant,
+                        batch_judge=args.batch_judge,
+                    )
+                # Tag the result with the variant for tracking
+                result.model_name = f"{result.model_name} [{variant}]"
+                all_results.append(result)
+            except Exception as e:
+                print(f"Failed to evaluate {model_config['name']} with {variant}: {e}")
 
     # Print and save results
     if all_results:

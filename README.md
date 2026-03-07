@@ -2,7 +2,7 @@
 
 A benchmark for evaluating LLM-generated security tests using mutation testing.
 
-**Version:** 2.5.0
+**Version:** 2.5.2
 
 ## Overview
 
@@ -108,17 +108,36 @@ print(f"Vulnerability Detected: {results['metrics']['vuln_detected']}")
 ### Run Evaluation
 
 ```bash
-# Evaluate reference tests
-python -m evaluation.evaluate --model reference
+# Step 1: Build dataset (required first)
+./build_db.sh 500
 
-# Filter by difficulty or CWE
-python -m evaluation.evaluate --difficulty easy
-python -m evaluation.evaluate --cwe CWE-89
+# Step 2: Run evaluation
+./run_evaluation.sh --models "qwen2.5-coder:7b" --samples 30
 
-# Run with LLM baselines
+# With ablation study (all prompt variants)
+./run_evaluation.sh --models "qwen2.5-coder:7b qwen2.5-coder:14b-instruct" --ablation --samples 10
+
+# With LLM-as-Judge (OpenAI)
+./run_evaluation.sh --models "qwen2.5-coder:7b" --judge openai --samples 30
+
+# With batch judge for 50% cost savings
+./run_evaluation.sh --models "qwen2.5-coder:7b" --judge openai --batch-judge --samples 100
+
+# With static analysis
+./run_evaluation.sh --models "qwen2.5-coder:7b" --static-analysis --samples 30
+
+# Full evaluation with all options
+./run_evaluation.sh \
+    --models "qwen2.5-coder:7b qwen2.5-coder:14b-instruct deepseek-coder-v2:latest" \
+    --ablation \
+    --judge openai \
+    --batch-judge \
+    --static-analysis \
+    --shuffle \
+    --samples 10
+
+# Direct script usage
 python baselines/run_llm_baselines.py --provider ollama --model qwen2.5-coder:7b --max-samples 30
-
-# Run static analysis baseline
 python baselines/run_static_analysis.py --tool bandit
 ```
 

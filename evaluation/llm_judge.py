@@ -60,9 +60,9 @@ def load_dotenv():
 load_dotenv()
 
 # Default judge model - configurable via environment variable
-DEFAULT_JUDGE_MODEL = os.getenv("SECMUTBENCH_JUDGE_MODEL", "claude-sonnet-4-5-20250929")
+DEFAULT_JUDGE_MODEL = os.getenv("SECMUTBENCH_JUDGE_MODEL", "claude-opus-4-6")
 DEFAULT_JUDGE_PROVIDER = os.getenv("SECMUTBENCH_JUDGE_PROVIDER", "anthropic")
-DEFAULT_OPENAI_MODEL = os.getenv("SECMUTBENCH_OPENAI_MODEL", "gpt-5")
+DEFAULT_OPENAI_MODEL = os.getenv("SECMUTBENCH_OPENAI_MODEL", "gpt-5.2-2025-12-11")
 
 
 @dataclass
@@ -210,7 +210,7 @@ class OpenAIJudge(LLMJudge):
 
     def __init__(
         self,
-        model: str = "gpt-5",
+        model: str = DEFAULT_OPENAI_MODEL,
         api_key: Optional[str] = None,
         temperature: float = 0.0,
     ):
@@ -261,7 +261,7 @@ class GeminiJudge(LLMJudge):
 
     def __init__(
         self,
-        model: str = "gemini-1.5-pro",
+        model: str = "gemini-3.0-flash",
         api_key: Optional[str] = None,
         temperature: float = 0.0,
     ):
@@ -638,6 +638,173 @@ class MultiModalEvaluator:
             },
         }
 
+    def evaluate_batch_api(
+        self,
+        samples: List[Dict[str, Any]],
+        generated_tests_list: List[str],
+        execution_results_list: Optional[List[Dict[str, Any]]] = None,
+        provider: str = "anthropic",
+        model: Optional[str] = None,
+        progress_callback: Optional[callable] = None,
+    ) -> List[MultiModalEvaluation]:
+        """
+        Evaluate multiple samples using batch API for cost savings.
+
+        Uses native batch APIs for Anthropic/OpenAI (50% savings) or
+        async concurrency for Google.
+
+        Args:
+            samples: List of benchmark samples
+            generated_tests_list: List of generated test code strings
+            execution_results_list: Optional execution results per sample
+            provider: "anthropic", "openai", or "google"
+            model: Model to use (defaults to provider default)
+            progress_callback: Optional callback(completed, total)
+
+        Returns:
+            List of MultiModalEvaluation results
+        """
+        from baselines.batch_api import create_batch_processor, BatchRequest
+
+        if execution_results_list is None:
+            execution_results_list = [None] * len(samples)
+
+        # Get prompts module
+        prompts = _get_prompts()
+
+        # Prepare batch requests for both security and quality evaluation
+        security_requests = []
+        quality_requests = []
+
+        for i, (sample, tests) in enumerate(zip(samples, generated_tests_list)):
+            if not tests.strip():
+                continue
+
+            # Security relevance prompt
+            sec_prompt = prompts['security_prompt'](
+                test_code=tests,
+                target_code=sample.get('secure_code', ''),
+                cwe_id=sample.get('cwe', 'Unknown'),
+                cwe_name=sample.get('cwe_name', 'vulnerability'),
+            )
+            security_requests.append(BatchRequest(
+                custom_id=f"sec-{sample.get('id', i)}",
+                prompt=sec_prompt,
+                system_prompt=prompts['security_system'],
+                metadata={"sample_idx": i, "type": "security"},
+            ))
+
+            # Test quality prompt
+            qual_prompt = prompts['quality_prompt'](
+                test_code=tests,
+                target_code=sample.get('secure_code', ''),
+                cwe_id=sample.get('cwe', 'Unknown'),
+                difficulty=sample.get('difficulty', 'unknown'),
+            )
+            quality_requests.append(BatchRequest(
+                custom_id=f"qual-{sample.get('id', i)}",
+                prompt=qual_prompt,
+                system_prompt=prompts['quality_system'],
+                metadata={"sample_idx": i, "type": "quality"},
+            ))
+
+        # Determine model
+        if model is None:
+            if provider == "anthropic":
+                model = DEFAULT_JUDGE_MODEL
+            elif provider == "google":
+                model = "gemini-3.0-flash"
+            else:
+                model = DEFAULT_OPENAI_MODEL
+
+        # Process both batches
+        processor = create_batch_processor(provider)
+
+        print(f"  Submitting {len(security_requests)} security evaluation requests...")
+        sec_result = processor.process_batch(security_requests, model)
+
+        print(f"  Submitting {len(quality_requests)} quality evaluation requests...")
+        qual_result = processor.process_batch(quality_requests, model)
+
+        # Map responses back
+        sec_responses = {r.custom_id: r for r in sec_result.responses}
+        qual_responses = {r.custom_id: r for r in qual_result.responses}
+
+        # Build evaluation results
+        results = []
+        for i, (sample, tests, exec_results) in enumerate(
+            zip(samples, generated_tests_list, execution_results_list)
+        ):
+            eval_result = MultiModalEvaluation(
+                sample_id=sample.get("id", "unknown"),
+                generated_tests=tests,
+            )
+
+            # Get execution-based scores
+            if exec_results:
+                metrics = exec_results.get("metrics", {})
+                eval_result.mutation_score = metrics.get("mutation_score", 0.0)
+                eval_result.coverage_score = metrics.get("line_coverage", 0.0)
+
+            # Parse security response
+            sec_resp = sec_responses.get(f"sec-{sample.get('id', i)}")
+            if sec_resp and sec_resp.success:
+                try:
+                    parsed = self._parse_judge_response(sec_resp.content)
+                    eval_result.security_relevance = SecurityRelevanceScore(
+                        metric="security_relevance",
+                        score=parsed.get("score", 0) / 100,
+                        reasoning=parsed.get("reasoning", ""),
+                        confidence=parsed.get("confidence", 0) / 100,
+                        raw_response=sec_resp.content,
+                    )
+                except Exception:
+                    eval_result.security_relevance = SecurityRelevanceScore(
+                        metric="security_relevance",
+                        score=0.0,
+                        reasoning="Parse error",
+                        confidence=0.0,
+                    )
+
+            # Parse quality response
+            qual_resp = qual_responses.get(f"qual-{sample.get('id', i)}")
+            if qual_resp and qual_resp.success:
+                try:
+                    parsed = self._parse_judge_response(qual_resp.content)
+                    eval_result.test_quality = TestQualityScore(
+                        metric="test_quality",
+                        score=parsed.get("score", 0) / 100,
+                        reasoning=parsed.get("reasoning", ""),
+                        confidence=parsed.get("confidence", 0) / 100,
+                        raw_response=qual_resp.content,
+                    )
+                except Exception:
+                    eval_result.test_quality = TestQualityScore(
+                        metric="test_quality",
+                        score=0.0,
+                        reasoning="Parse error",
+                        confidence=0.0,
+                    )
+
+            # Calculate composite score
+            eval_result.calculate_composite(self.weights)
+            results.append(eval_result)
+
+            if progress_callback:
+                progress_callback(i + 1, len(samples))
+
+        return results
+
+    def _parse_judge_response(self, response: str) -> Dict[str, Any]:
+        """Parse JSON response from judge."""
+        json_match = re.search(r'\{[\s\S]*\}', response)
+        if json_match:
+            try:
+                return json.loads(json_match.group())
+            except json.JSONDecodeError:
+                pass
+        return {}
+
 
 def format_multimodal_report(
     aggregate: Dict[str, Any],
@@ -705,9 +872,9 @@ def create_evaluator(
         if provider == "anthropic":
             model = DEFAULT_JUDGE_MODEL  # claude-sonnet-4-5-20250929
         elif provider == "google":
-            model = "gemini-1.5-pro"
+            model = "gemini-3.0-flash"
         else:
-            model = "gpt-5"
+            model = DEFAULT_OPENAI_MODEL  # gpt-5.2-2025-12-11
 
     # Check for API key
     if provider == "anthropic":
