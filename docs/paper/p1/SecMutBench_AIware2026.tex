@@ -1,0 +1,476 @@
+\documentclass[sigconf,review,anonymous]{acmart}
+
+%% Rights management - will be filled by ACM
+\setcopyright{acmlicensed}
+\acmConference[AIware '26]{3rd ACM International Conference on AI-powered Software}{July 6--7, 2026}{Montreal, Canada}
+\acmBooktitle{Proceedings of the 3rd ACM International Conference on AI-powered Software (AIware '26), July 6--7, 2026, Montreal, Canada}
+\acmDOI{}
+\acmISBN{}
+
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{listings}
+\usepackage{balance}
+
+% Placeholder command for TODO items
+\newcommand{\todo}[1]{\textcolor{gray}{\textit{[TODO: #1]}}}
+
+% Code listing style
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  language=Python,
+  showstringspaces=false,
+  columns=flexible,
+  aboveskip=6pt,
+  belowskip=6pt
+}
+
+\begin{document}
+
+%% Title
+\title{SecMutBench: Evaluating LLM-Generated Security Tests via Mutation-Based Vulnerability Detection}
+
+\author{Anonymous Author(s)}
+
+\begin{abstract}
+Evaluating whether Large Language Models (LLMs) can generate effective security tests remains an open challenge. Existing code security benchmarks focus on secure code \emph{generation} and rely on surface-level metrics such as pass@k, failing to measure whether generated tests actually detect vulnerabilities. We introduce SecMutBench, a mutation-based benchmark for evaluating LLM-generated security tests across 14 CWE categories. SecMutBench applies 19 security-specific mutation operators to 307 Python programs, producing 774 mutants that model realistic vulnerability patterns---such as converting parameterized SQL queries to string concatenation (CWE-89) or downgrading cryptographic algorithms (CWE-327). We propose the Security Mutation Score (SMS), which classifies mutant kills into semantic, incidental, and crash categories using operator-aware heuristics to distinguish genuine security awareness from superficial test failures. Our evaluation of multiple LLMs alongside static analysis baselines (Bandit) reveals a critical finding: traditional mutation scores overstate LLM security testing capability by approximately 10$\times$ compared to SMS, with the majority of kills attributable to runtime crashes rather than security-aware assertions. Furthermore, static analysis achieves 70.7\% detection on pattern-based vulnerabilities but only 1.2\% on logic-flaw CWEs, demonstrating complementary coverage. SecMutBench is publicly available with an executable evaluation framework, CWE-specific mock environments, and pre-generated mutants for reproducible benchmarking.
+\end{abstract}
+
+\begin{CCSXML}
+<ccs2012>
+<concept>
+<concept_id>10011007.10011074.10011099.10011102.10011103</concept_id>
+<concept_desc>Software and its engineering~Software testing and debugging</concept_desc>
+<concept_significance>500</concept_significance>
+</concept>
+<concept>
+<concept_id>10002978.10003029.10011703</concept_id>
+<concept_desc>Security and privacy~Software security engineering</concept_desc>
+<concept_significance>500</concept_significance>
+</concept>
+</ccs2012>
+\end{CCSXML}
+
+\ccsdesc[500]{Software and its engineering~Software testing and debugging}
+\ccsdesc[500]{Security and privacy~Software security engineering}
+
+\keywords{mutation testing, security testing, large language models, benchmark, vulnerability detection}
+
+\maketitle
+
+%% ====================================================================
+%% I. INTRODUCTION
+%% ====================================================================
+\section{Introduction}
+
+Software vulnerabilities remain one of the most costly challenges in modern computing. The global cost of cybercrime reached \$9.22 trillion in 2024 and is projected to exceed \$10.5 trillion in 2025~\cite{cybersecventures2025}, with the average cost of a single data breach climbing to \$4.88 million globally and \$10.22 million in the United States alone~\cite{ibm2024breach}. Unpatched vulnerabilities account for approximately 20\% of all breaches, while over 29,000 critical vulnerabilities were disclosed in 2025---a 24\% increase over the prior year. Security testing is fundamental to identifying these vulnerabilities before deployment, yet manual security test creation is expensive, time-consuming, and difficult to scale.
+
+At the same time, AI-powered coding assistants have seen explosive adoption. According to Stack Overflow's 2025 Developer Survey~\cite{stackoverflow2025survey}, 84\% of developers now use AI tools in their workflows, with 65\% using them at least weekly and 51\% of professional developers relying on them daily. Code generation has become AI's first breakout use case, growing into a \$1.9 billion ecosystem~\cite{menlo2025llm} that includes AI IDEs (Cursor~\footnote{\url{https://cursor.sh}}, Windsurf~\footnote{\url{https://codeium.com/windsurf}}), application builders (Lovable, Bolt), and enterprise coding agents (Claude Code, GitHub Copilot~\cite{pearce2022asleep}). Major technology companies report that 25\% or more of their code is now AI-generated, and Menlo Ventures estimates that code-generation-focused AI captured 42\% of the LLM developer market by mid-2025~\cite{menlo2025llm}.
+
+This rapid adoption introduces a critical question for software security: \emph{as LLMs increasingly generate code, can they also generate effective security tests to catch vulnerabilities in that code?} The stakes are high---if AI-generated code is deployed with inadequate security testing, the same tools that accelerate development may simultaneously accelerate vulnerability introduction.
+
+Several benchmarks have emerged to evaluate LLM security capabilities, but they focus almost exclusively on secure code \emph{generation}. CyberSecEval~\cite{bhatt2023cyberseceval} evaluates whether LLMs produce vulnerable code completions across multiple languages, using static analysis rules for automated detection. SecurityEval~\cite{siddiq2022securityeval} provides 130 prompt-based Python coding challenges mapped to 75 CWE types, while SecCodePLT~\cite{secccodeplt2024} extends this with ground-truth secure/insecure code pairs and automated evaluation pipelines. CWEval~\cite{yang2024cweval} offers 119 expert-verified tasks across 31 CWE types with CodeQL-based detection, enabling outcome-driven evaluation of both functionality and security. More recently, CFCEval~\cite{cheng2025cfceval} introduced the Element-Level Relevance Metric (ELRM) to assess code fix quality across four dimensions, addressing dataset bias through the MLVBench benchmark. Pearce et al.~\cite{pearce2022asleep} assessed the security of GitHub Copilot's code contributions, finding that approximately 40\% of generated programs contained vulnerabilities. Tony et al.~\cite{tony2023llmseceval} created natural language prompts for security evaluations across multiple CWE categories.
+
+A critical distinction separates all these benchmarks from SecMutBench: they focus on code \emph{generation} quality---evaluating whether LLM-produced code is secure. SecMutBench instead evaluates test \emph{generation} quality---measuring whether LLM-produced tests can detect vulnerabilities. These are complementary but fundamentally different capabilities. A model that generates secure code may still be unable to articulate \emph{what makes alternative implementations vulnerable} through targeted test assertions. Furthermore, a model may avoid generating vulnerable code simply because it has learned to produce safe patterns, without possessing any deeper understanding of the vulnerability mechanism.
+
+This gap in evaluation is compounded by a gap in \emph{metrics}. Current approaches rely on surface-level measures---pass rates, code similarity scores (e.g., CodeBLEU), and binary pass/fail against known vulnerabilities---that cannot distinguish between a test that detects a SQL injection through a targeted assertion (\texttt{assert ``parameterized'' in query\_method}) and one that merely crashes when encountering malformed input (\texttt{TypeError: unsupported operand}). This distinction is critical in practice: a crash-inducing test provides no diagnostic value to a developer, while a security-aware assertion identifies the specific vulnerability class and suggests a remediation path. Yet no existing benchmark makes this distinction.
+
+We address these gaps with SecMutBench, a mutation-based benchmark grounded in two decades of security mutation testing research~\cite{du2000testing,shahriar2008music,mouelhi2007mutation}. Rather than evaluating whether LLM-generated code is secure, we evaluate whether LLM-generated \emph{tests} can detect security vulnerabilities. Our approach applies 19 security-specific mutation operators that transform secure code into realistic vulnerable variants---such as converting parameterized SQL queries to string concatenation (CWE-89), replacing \texttt{subprocess.run([...])} with \texttt{shell=True} string commands (CWE-78), or downgrading SHA-256 to MD5 (CWE-327). Each mutant models a known vulnerability pattern mapped to a CWE category~\cite{mitre2024cwe}. LLM-generated tests are then evaluated against these mutants, and kills are classified by type---semantic, incidental, or crash---to reveal whether models demonstrate genuine security awareness or merely detect code breakage.
+
+Our evaluation reveals a striking finding: traditional mutation scores overstate LLM security testing capability by approximately 10$\times$. The majority of mutant ``kills'' are attributable to runtime crashes rather than security-aware assertions, meaning that models appear far more capable at security testing than they actually are. This inflation has significant implications for practitioners who might rely on aggregate metrics to assess LLM-generated test quality.
+
+Our key contributions are:
+
+\begin{enumerate}
+    \item \textbf{SecMutBench benchmark}: 307 Python programs across 14 CWE categories with 19 mutation operators producing 774 pre-generated mutants from four curated data sources (SecCodePLT, CyberSecEval, SecurityEval, and hand-crafted templates), accompanied by an executable evaluation framework with eight CWE-specific mock environments enabling automated, reproducible evaluation.
+    
+    \item \textbf{Security Mutation Score (SMS)}: A metric using operator-aware kill classification to categorize mutant kills into semantic (security-aware assertions), incidental (functional assertions), and crash (runtime failures), providing a more accurate measure of genuine security test quality than raw mutation scores.
+    
+    \item \textbf{Empirical evaluation}: An evaluation of multiple LLMs alongside static analysis baselines (Bandit) revealing that traditional mutation scores overstate security testing capability by approximately 10$\times$, with crash kills accounting for the majority of mutant deaths, and that static analysis and mutation testing provide complementary coverage across vulnerability types.
+    
+    \item \textbf{External validation}: Cross-validation against CWEval~\cite{yang2024cweval} expert-verified test suites demonstrating 92\% ground truth establishment, 50\% vulnerability class match with our mutation operators, and identifying specific operator coverage gaps for future work.
+\end{enumerate}
+
+The paper is organized as follows. Section~\ref{sec:related} introduces related work on LLM security benchmarks, mutation testing for security, and LLM-based test generation. Section~\ref{sec:framework} presents the SecMutBench framework, including dataset construction, mutation operators, kill classification, and the evaluation pipeline. Section~\ref{sec:setup} describes the experimental setup. Section~\ref{sec:results} presents results addressing our three research questions. Section~\ref{sec:discussion} discusses implications and recommendations. Section~\ref{sec:validation} describes external validation against CWEval. Section~\ref{sec:threats} addresses threats to validity, and Section~\ref{sec:conclusion} concludes.
+
+%% ====================================================================
+%% II. RELATED WORK
+%% ====================================================================
+\section{Related Work}\label{sec:related}
+
+\subsection{LLM Security Code Benchmarks}
+
+Several benchmarks evaluate LLM capabilities in security-related code tasks. CyberSecEval~\cite{bhatt2023cyberseceval} assesses insecure code suggestions across multiple languages using static analysis for detection. SecurityEval~\cite{siddiq2022securityeval} provides 130 prompt-based Python coding challenges mapped to 75 CWE types. SecCodePLT~\cite{secccodeplt2024} provides ground-truth secure/insecure code pairs with automated evaluation. CWEval~\cite{yang2024cweval} offers 119 expert-verified tasks with CodeQL-based detection. CFCEval~\cite{cheng2025cfceval} introduces the ELRM metric to evaluate vulnerability-fixing capability across four dimensions, addressing dataset bias through the MLVBench benchmark.
+
+Pearce et al.~\cite{pearce2022asleep} assessed the security of GitHub Copilot's contributions, and Tony et al.~\cite{tony2023llmseceval} created natural language prompts for security evaluations. A critical distinction separates all these from SecMutBench: they focus on code \emph{generation} quality, while SecMutBench evaluates test \emph{generation} quality. These are complementary but fundamentally different capabilities---a model may generate secure code without understanding why alternative implementations are vulnerable.
+
+\subsection{Mutation Testing for Security}
+
+Mutation testing, introduced by DeMillo et al.~\cite{demillo1978hints}, evaluates test suite adequacy by introducing small syntactic changes (mutants) into programs and measuring whether tests detect these changes. The underlying \emph{competent programmer hypothesis} assumes that programs are nearly correct, and the \emph{coupling effect hypothesis} posits that tests detecting simple faults will also detect more complex ones.
+
+The application of mutation testing to security has a two-decade research history, surveyed broadly by Jia and Harman~\cite{jia2011analysis} and Papadakis et al.~\cite{papadakis2019mutation}. Du and Mathur~\cite{du2000testing} introduced environment fault injection for security testing, and Wimmel and J\"{u}rjens~\cite{wimmel2002specification} pioneered specification-based security mutation. Shahriar and Zulkernine developed vulnerability-specific operators: MUSIC~\cite{shahriar2008music} (9 operators for SQL injection), MUTEC~\cite{shahriar2009mutec} (11 for XSS), and MUFORMAT~\cite{shahriar2008muformat} (8 for format strings). Martin and Xie~\cite{martin2007xacml} created XACML policy mutation operators. Mouelhi et al.~\cite{mouelhi2007mutation} established that functional tests achieving high code coverage fail to achieve high security mutation scores, validating the need for security-specific adequacy measures.
+
+Loise et al.~\cite{loise2017security} proposed the first systematic framework for security-aware mutation testing, defining 15 operators for Java targeting vulnerabilities detectable by FindBugs, including operators for SQL injection, HTTP response splitting, and XML external entities. Their work demonstrated that security-specific mutation operators can effectively evaluate the security awareness of test suites. Our mutation operators in SecMutBench extend this framework to Python and introduce additional operators targeting CWEs not covered in their work, including command injection (CWE-78), insecure deserialization (CWE-502), and SSRF (CWE-918).
+
+Recent work includes MASC~\cite{ami2023masc} (12 operators for cryptographic API misuse), $\mu$SE~\cite{bonett2018muse} (mutation-based evaluation of Android security analyzers discovering 25 undocumented flaws), and G{\"o}rz et al.'s~\cite{gorz2023mutation} mutation analysis for fuzzer evaluation. SecMutBench builds on this foundation by adapting the security mutation paradigm to evaluate LLM-generated tests---a context not addressed in prior work.
+
+\subsection{LLM-Based Test Generation}
+
+LLMs have shown promise in automated test generation. Sch\"{a}fer et al.~\cite{schafer2024empirical} empirically evaluated LLMs for unit test generation, Lemieux et al.~\cite{lemieux2023codamosa} used LLMs to escape coverage plateaus, Yuan et al.~\cite{yuan2024no} evaluated ChatGPT for unit tests, and Deng et al.~\cite{deng2023large} applied LLMs as zero-shot fuzzers. Work on assertion generation and test summarization~\cite{nashid2024assertion} has advanced test understanding. Notably, Dakhel et al.~\cite{dakhel2023mutap} introduced MuTAP, which leverages mutation testing to improve LLM-generated test effectiveness by augmenting prompts with surviving mutants. While MuTAP uses mutation testing as a \emph{feedback mechanism} for iterative test improvement, SecMutBench uses it as an \emph{evaluation criterion} for measuring security awareness---a complementary but distinct objective.
+
+Despite this growing body of work, evaluation of LLM test generation has largely focused on functional correctness (line coverage, branch coverage, pass rates) rather than security-specific properties. To our knowledge, SecMutBench is the first benchmark specifically designed to evaluate security test generation by LLMs using mutation-based adequacy criteria.
+
+
+%% ====================================================================
+%% III. SECMUTBENCH FRAMEWORK
+%% ====================================================================
+\section{SecMutBench Framework}\label{sec:framework}
+
+%% FIGURE PLACEHOLDER 1: Framework Overview Diagram
+\begin{figure}[t]
+  \centering
+  \fbox{\parbox{0.93\columnwidth}{\centering\vspace{2cm}\textbf{Figure Placeholder: SecMutBench Framework Overview}\\\smallskip
+  \small A pipeline diagram showing: (1) Dataset Sources $\rightarrow$ (2) Secure Code + CWE Label $\rightarrow$ (3) Mutation Operators applied $\rightarrow$ (4) Pre-generated Mutants $\rightarrow$ (5) LLM Test Generation $\rightarrow$ (6) Test Execution (secure + mutants) $\rightarrow$ (7) Kill Classification (semantic / incidental / crash) $\rightarrow$ (8) SMS Computation. Include mock injection into step 6.\vspace{2cm}}}
+  \caption{Overview of the SecMutBench evaluation framework. Secure programs are mutated using 19 security-specific operators. LLM-generated tests are executed against both secure code and mutants, and kills are classified to compute the Security Mutation Score (SMS).}
+  \label{fig:framework}
+\end{figure}
+
+\subsection{Dataset Construction}
+
+SecMutBench consolidates samples from four sources to ensure diversity in vulnerability patterns, coding styles, and complexity levels. Table~\ref{tab:dataset} summarizes the dataset composition.
+
+\begin{table}[t]
+\caption{Dataset composition by source.}
+\label{tab:dataset}
+\small
+\begin{tabular}{lrl}
+\toprule
+\textbf{Source} & \textbf{Samples} & \textbf{Description} \\
+\midrule
+SecCodePLT~\cite{secccodeplt2024} & 168 & Ground-truth secure/insecure pairs \\
+SecMutBench Templates & 61 & Hand-crafted across 16 CWEs \\
+CyberSecEval~\cite{bhatt2023cyberseceval} & 59 & Autocomplete-style samples \\
+SecurityEval~\cite{siddiq2022securityeval} & 19 & Prompt-based challenges \\
+\midrule
+\textbf{Total} & \textbf{307} & \textbf{14 CWEs, 774 mutants} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Each sample contains a secure implementation, an insecure variant with a known vulnerability, CWE classification, reference security tests, and pre-generated mutants. The dataset construction pipeline applies contamination prevention through AST-based identifier renaming, validates operator applicability, and filters tautological tests. Samples span three difficulty levels: easy (24), medium (208), and hard (75), assigned based on code complexity and vulnerability subtlety.
+
+SecCodePLT provides the largest subset (168 samples) with ground-truth secure/insecure pairs, avoiding the need for LLM-based code generation. We integrate 9 overlapping CWEs where mutation operators exist, filtering external-dependency samples to ensure self-contained evaluation.
+
+
+\subsection{Security Mutation Operators}
+
+SecMutBench defines 19 mutation operators that transform secure code into vulnerable variants. Unlike traditional mutation operators that create arbitrary syntactic changes~\cite{demillo1978hints}, our operators model specific vulnerability patterns mapped to CWE categories. Table~\ref{tab:operators} presents the operator taxonomy.
+
+Our mutation operators extend the security-aware mutation testing framework introduced by Loise et al.~\cite{loise2017security}, who defined 15 operators for Java targeting vulnerabilities detectable by FindBugs. We adapt their PSQLI, RHTTPOFC, and XMLPVXXE operators to Python and introduce 9 additional operators targeting CWEs not covered in their work, including command injection (CWE-78), insecure deserialization (CWE-502), and SSRF (CWE-918). Our operator design follows their approach: we identify secure code patterns from CWE descriptions and define transformations that introduce the corresponding vulnerability.
+
+\begin{table}[t]
+\caption{Security mutation operators (top 12 by sample count).}
+\label{tab:operators}
+\small
+\begin{tabular}{llr}
+\toprule
+\textbf{Operator} & \textbf{Target CWEs} & \textbf{n} \\
+\midrule
+PATHCONCAT & CWE-22, 73 & 68 \\
+RVALID & CWE-20, 79, 89, 22, 78 & 65 \\
+DESERIAL & CWE-502, 94 & 53 \\
+WEAKCRYPTO & CWE-327, 328 & 35 \\
+CMDINJECT & CWE-78, 77 & 32 \\
+HARDCODE & CWE-798 & 20 \\
+XXE & CWE-611 & 13 \\
+INPUTVAL & CWE-20 & 8 \\
+RMAUTH & CWE-287, 306, 862 & 8 \\
+SSRF & CWE-918 & 7 \\
+CSRF\_REMOVE & CWE-352 & 7 \\
+PSQLI & CWE-89 & 5 \\
+\bottomrule
+\end{tabular}
+\vspace{2pt}
+{\footnotesize \textit{n} = samples where operator fires. Additional operators (RENCRYPT, RHTTPO, IDOR, SSTI, CORS\_WEAK, WEAKRANDOM, SUBDOMAIN\_SPOOF) are defined but fire on $\leq$5 samples.}
+\end{table}
+
+Each operator implements \texttt{applies\_to(code)} for pattern matching and \texttt{mutate(code)} returning (mutated\_code, description) pairs. For example, \textsc{PSQLI} converts parameterized SQL queries (\texttt{execute(query, (param,))}) to string concatenation (\texttt{execute(f"...~\{param\}")}), analogous to the Java PSQLI operator of Loise et al.~\cite{loise2017security}, and \textsc{CMDINJECT} replaces array arguments with \texttt{shell=True} string commands.
+
+We implement a custom mutation engine rather than extending existing Python mutation testing tools (e.g., MutPy~\cite{derezinska2014experimental}) because our security-focused operators require pattern-based transformations on source code strings rather than AST node replacements. Each operator targets a specific vulnerability class defined by its CWE mapping, ensuring that generated mutants represent realistic security flaws rather than arbitrary syntactic perturbations.
+
+%% FIGURE PLACEHOLDER 2: Mutation Operator Example
+\begin{figure}[t]
+  \centering
+  \fbox{\parbox{0.93\columnwidth}{\centering\vspace{1.5cm}\textbf{Figure Placeholder: Mutation Operator Example}\\\smallskip
+  \small Side-by-side code diff showing a concrete mutation: (Left) Secure code with parameterized SQL query \texttt{cursor.execute(query, (user\_id,))}. (Right) Mutated code with string concatenation \texttt{cursor.execute(f"SELECT ... \{user\_id\}")}. Annotate with: operator name (PSQLI), CWE-89, and the type of kill each would produce (semantic: ``assert parameterized''; crash: TypeError; incidental: ``assert len(result) == 5'').\vspace{1.5cm}}}
+  \caption{Example of the PSQLI mutation operator transforming a parameterized SQL query (secure) into string concatenation (vulnerable, CWE-89), with illustrative kill classifications.}
+  \label{fig:mutation_example}
+\end{figure}
+
+Mutants are pre-generated during dataset construction and stored in each sample's JSON record. This ensures deterministic evaluation---the same mutants are used across all evaluation runs---and eliminates variation from operator application order.
+
+
+\subsection{Kill Classification and SMS Metric}
+
+The central insight of SecMutBench is that not all mutant kills are equal. When a test kills a mutant (passes on secure code, fails on mutant), the kill type reveals whether the test demonstrates genuine security awareness.
+
+Formally, let $P$ denote a secure program and $M = \{m_1, m_2, \ldots, m_k\}$ the set of mutants generated by applying security mutation operators $O = \{o_1, \ldots, o_{19}\}$. For a test suite $T$ generated by an LLM, we define the kill predicate:
+\begin{equation}
+    \text{kill}(t, m) = \begin{cases} 1 & \text{if } t \text{ passes on } P \text{ and fails on } m \\ 0 & \text{otherwise} \end{cases}
+\end{equation}
+
+\noindent For each killed mutant, we classify the failure into one of three categories:
+
+\begin{itemize}
+    \item \textbf{Semantic kill}: The test fails with an assertion error whose message contains operator-specific security indicators (e.g., ``SQL query not parameterized'' for \textsc{PSQLI} mutants). This indicates the test explicitly checks for the vulnerability.
+    
+    \item \textbf{Incidental kill}: The test fails with an assertion error that is not security-specific (e.g., ``expected 5 got 3''). The mutation happens to change functional behavior detected by a non-security assertion.
+    
+    \item \textbf{Crash kill}: The test fails due to a runtime error (ImportError, TypeError, NameError). The mutation breaks the code in a way that causes an exception rather than being detected by a test assertion.
+\end{itemize}
+
+\noindent Let $K_s$, $K_i$, and $K_c$ denote the sets of semantic, incidental, and crash kills respectively, where $K_s \cup K_i \cup K_c \subseteq M$ and the sets are mutually disjoint. We define the \textbf{Security Mutation Score} as:
+\begin{equation}
+    \text{SMS} = \frac{|K_s|}{|M|}
+\end{equation}
+
+\noindent In contrast, the traditional Mutation Score (MS) counts all kills:
+\begin{equation}
+    \text{MS} = \frac{|K_s| + |K_i| + |K_c|}{|M|}
+\end{equation}
+
+\noindent The \textbf{inflation ratio} $\rho$ captures the overstatement:
+\begin{equation}
+    \rho = \frac{\text{MS}}{\text{SMS}}
+\end{equation}
+
+\noindent When $\rho \gg 1$, the gap is attributable to crash and incidental kills that do not represent genuine security detection. We additionally report the Crash Score ($|K_c| / |M|$), Incidental Score ($|K_i| / |M|$), and Vulnerability Detection rate (VD: proportion of samples where tests pass on secure code AND fail on at least one mutant):
+\begin{equation}
+    \text{VD} = \frac{|\{p \in P : \exists\, m \in M_p,\, t \in T_p \text{ s.t. } \text{kill}(t, m) = 1\}|}{|P|}
+\end{equation}
+
+\textbf{Operator-aware classification.} A key refinement in SecMutBench is that kill classification uses operator-specific keyword lists rather than a flat global list. For example, ``path'' triggers semantic classification only for \textsc{PATHCONCAT} mutants, not for \textsc{PSQLI} mutants. Each of the 19 operators has a tailored set of security-relevant terms (e.g., \textsc{WEAKCRYPTO}: \{md5, sha1, weak, bcrypt, salt\}; \textsc{DESERIAL}: \{pickle, yaml, safe\_load, SafeLoader\}). This prevents false inflation of SMS scores from coincidental keyword matches.
+
+
+\subsection{Evaluation Pipeline}
+
+The evaluation pipeline executes LLM-generated tests in isolated subprocesses using pytest. Each test execution creates a temporary directory containing the code under test, generated tests, and a conftest module that injects CWE-specific mock environments.
+
+Mock injection serves dual purposes: \emph{safety} (preventing real system calls, file operations, and network access) and \emph{observability} (mock objects track whether security-relevant operations were performed). Eight mock environments cover the major CWE categories: MockDatabase (CWE-89), MockSubprocess (CWE-78), MockFileSystem (CWE-22), MockHTTPClient (CWE-918), MockCrypto (CWE-327), MockPickle and MockYAML (CWE-502), and MockEnvironment (CWE-798). Mocks are injected via both Python builtins namespace and \texttt{sys.modules} patching, ensuring that both implicit name resolution and explicit imports resolve to mock objects.
+
+For each sample, the pipeline: (1) runs generated tests against secure code (tests should pass), (2) runs tests against each pre-generated mutant (security-aware tests should fail), (3) classifies each kill using operator-aware heuristics, and (4) computes SMS and supporting metrics. Test results are captured via a custom pytest \texttt{ResultCollector} plugin producing structured JSON.
+
+
+%% ====================================================================
+%% IV. EXPERIMENTAL SETUP
+%% ====================================================================
+\section{Experimental Setup}\label{sec:setup}
+
+\subsection{Research Questions}
+
+\begin{description}
+    \item[RQ1:] \textit{How effectively do LLMs generate security-aware tests?} We compare overall mutation scores (MS) against Security Mutation Scores (SMS) to quantify the inflation introduced by crash and incidental kills.
+    
+    \item[RQ2:] \textit{What types of kills do LLM-generated tests produce?} We analyze the kill classification breakdown to understand why traditional metrics overstate LLM security testing capability.
+    
+    \item[RQ3:] \textit{How does security test effectiveness vary across vulnerability types?} We examine per-CWE and per-operator effectiveness to identify systematic blind spots, including comparison with static analysis baselines.
+\end{description}
+
+
+\subsection{Subject Models}
+
+\todo{List all evaluated models with sizes, providers, and access method. Include both LLMs and Bandit/Semgrep. Example:}
+
+\begin{table}[t]
+\caption{Subject models and baselines.}
+\label{tab:models}
+\small
+\begin{tabular}{llll}
+\toprule
+\textbf{Model} & \textbf{Size} & \textbf{Provider} & \textbf{Access} \\
+\midrule
+\todo{model1} & \todo{--} & \todo{--} & \todo{--} \\
+\todo{model2} & \todo{--} & \todo{--} & \todo{--} \\
+\todo{model3} & \todo{--} & \todo{--} & \todo{--} \\
+\todo{model4} & \todo{--} & \todo{--} & \todo{--} \\
+\midrule
+Bandit & -- & Static & CLI \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\todo{Include any model-specific configuration: temperature, max tokens, number of attempts per sample.}
+
+
+\subsection{Prompting Strategy}
+
+Each model receives a standardized zero-shot prompt containing the secure code implementation, the CWE category identifier and name, and the function entry point. The prompt instructs the model to generate pytest-compatible security tests that would detect if the code were vulnerable to the specified CWE. No few-shot examples are provided to establish a zero-shot baseline.
+
+\todo{Insert exact prompt template used.}
+
+
+\subsection{Execution Environment}
+
+\todo{Hardware specs, Python version, timeout settings per test, number of runs, any randomization.}
+
+
+%% ====================================================================
+%% V. RESULTS
+%% ====================================================================
+\section{Results}\label{sec:results}
+
+\subsection{RQ1: Overall Effectiveness}
+
+\todo{Main results table. This is the headline finding --- MS vs SMS for each model.}
+
+\begin{table}[t]
+\caption{Overall mutation scores across models.}
+\label{tab:rq1}
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+\textbf{Model} & \textbf{MS} & \textbf{SMS} & \textbf{Crash} & \textbf{Incid.} & \textbf{MS/SMS} \\
+\midrule
+\todo{model1} & \todo{--} & \todo{--} & \todo{--} & \todo{--} & \todo{--} \\
+\todo{model2} & \todo{--} & \todo{--} & \todo{--} & \todo{--} & \todo{--} \\
+\todo{model3} & \todo{--} & \todo{--} & \todo{--} & \todo{--} & \todo{--} \\
+\todo{model4} & \todo{--} & \todo{--} & \todo{--} & \todo{--} & \todo{--} \\
+\midrule
+Bandit & \todo{--} & -- & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\todo{Key narrative: (1) The inflation ratio across models. (2) Compare LLM results against Bandit baseline. (3) Bandit achieves 70.7\% on static-analyzable CWEs but 1.2\% on dynamic-only.}
+
+\smallskip\noindent\fbox{\parbox{0.95\columnwidth}{\textbf{Finding 1:} \todo{State the headline inflation finding with specific numbers.}}}\smallskip
+
+
+\subsection{RQ2: Kill Classification Analysis}
+
+\todo{Kill breakdown figure or table showing distribution per model. Stacked bar chart recommended.}
+
+%% FIGURE PLACEHOLDER 3: Kill Classification Breakdown
+\begin{figure}[t]
+  \centering
+  \fbox{\parbox{0.93\columnwidth}{\centering\vspace{2cm}\textbf{Figure Placeholder: Kill Classification Breakdown}\\\smallskip
+  \small Stacked bar chart with one bar per model (+ Bandit baseline). Each bar divided into three colored segments: semantic kills (green), incidental kills (yellow), crash kills (red). X-axis: models. Y-axis: proportion of total mutants. Add a horizontal dashed line showing average SMS across models to highlight the gap between MS (full bar height) and SMS (green segment only).\vspace{2cm}}}
+  \caption{Kill classification breakdown across evaluated models. The gap between total bar height (MS) and the semantic segment (SMS) illustrates the inflation ratio.}
+  \label{fig:kills}
+\end{figure}
+
+\todo{Analysis: (1) Why crashes dominate. (2) What percentage of LLM tests fail on secure code (test quality issue). (3) Specific examples of crash vs semantic kills from your data.}
+
+\smallskip\noindent\fbox{\parbox{0.95\columnwidth}{\textbf{Finding 2:} \todo{State kill classification finding with percentages.}}}\smallskip
+
+
+\subsection{RQ3: Vulnerability-Specific Analysis}
+
+\todo{Per-CWE breakdown table.}
+
+\begin{table}[t]
+\caption{Per-CWE effectiveness (aggregated across models).}
+\label{tab:rq3}
+\small
+\begin{tabular}{llrrrr}
+\toprule
+\textbf{CWE} & \textbf{Category} & \textbf{n} & \textbf{MS} & \textbf{SMS} & \textbf{Bandit} \\
+\midrule
+\todo{CWE-89} & SQL Injection & \todo{--} & \todo{--} & \todo{--} & \todo{--} \\
+\todo{CWE-78} & Cmd Injection & \todo{--} & \todo{--} & \todo{--} & \todo{--} \\
+\todo{CWE-22} & Path Traversal & \todo{--} & \todo{--} & \todo{--} & \todo{--} \\
+\todo{...} & & & & & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\todo{Analysis: (1) Which CWEs have the largest MS-SMS gap? (2) Do injection-based CWEs outperform logic-based ones? (3) Cross-model patterns --- do some models excel at specific CWE families? (4) Compare LLM per-CWE SMS against Bandit detection rates.}
+
+\smallskip\noindent\fbox{\parbox{0.95\columnwidth}{\textbf{Finding 3:} \todo{State per-CWE finding.}}}\smallskip
+
+
+%% ====================================================================
+%% VI. DISCUSSION
+%% ====================================================================
+\section{Discussion}\label{sec:discussion}
+
+\subsection{Implications for LLM Evaluation}
+
+Our findings carry significant implications for how the community evaluates LLM security capabilities. The substantial gap between MS and SMS demonstrates that surface-level metrics create a misleading picture of LLM security awareness. Benchmarks that report only pass/fail or mutation scores without kill classification risk overestimating model capabilities and providing false assurance to practitioners.
+
+The dominance of crash kills suggests that LLM-generated tests often detect code breakage rather than security vulnerabilities. This parallels findings in traditional mutation testing, where Mouelhi et al.~\cite{mouelhi2007mutation} demonstrated that functional tests achieving high code coverage fail to achieve high security mutation scores. Our results extend this insight to the LLM context: models that are proficient at generating functional tests may nevertheless lack genuine security reasoning capability.
+
+
+\subsection{Static Analysis Comparison}
+
+The Bandit~\cite{bandit2024} baseline provides important context. On pattern-based vulnerabilities with clear syntactic signatures (e.g., \texttt{shell=True}, string-formatted SQL), static analysis achieves high detection rates (70.7\% across static-analyzable CWEs). However, 54\% of our dataset consists of logic-flaw CWEs where Bandit achieves only 1.2\% detection. This demonstrates that mutation testing provides essential coverage that static analysis cannot: it evaluates whether tests detect \emph{behavioral} vulnerabilities, not just \emph{syntactic} anti-patterns.
+
+\todo{Add specific comparison: on which CWEs do LLMs outperform Bandit, and vice versa?}
+
+
+\subsection{Why Current Metrics Overstate Capability}
+
+The inflation mechanism operates through two channels. First, crash kills arise when mutations break syntactic or type-level properties, causing runtime exceptions before any assertion is evaluated. These kills require no security awareness. Second, incidental kills occur when security mutations alter functional behavior---for example, a \textsc{WEAKCRYPTO} mutation changing hash output lengths may be caught by a length assertion rather than a cryptographic strength check.
+
+\todo{Add 1--2 specific examples from your results demonstrating each inflation channel.}
+
+
+\subsection{Recommendations}
+
+Based on our findings, we recommend that: (1) evaluations of LLM security test generation should decompose kills by type rather than reporting aggregate mutation scores; (2) benchmark datasets should include pre-generated mutants for reproducibility; and (3) security test quality metrics should weight semantic kills substantially higher than crash or incidental kills. For practitioners using LLMs to generate security tests, our results suggest generated tests should be reviewed for security-specific assertions rather than trusted based on pass/fail behavior alone.
+
+
+%% ====================================================================
+%% VII. EXTERNAL VALIDATION
+%% ====================================================================
+\section{External Validation}\label{sec:validation}
+
+To assess SecMutBench's pipeline quality, we cross-validate against CWEval~\cite{yang2024cweval}, which provides 25 expert-verified Python task/test pairs across 20 CWEs.
+
+\textbf{Mutation operator sanity.} We compare diffs produced by our mutation operators against CWEval's known vulnerable implementations for 12 overlapping samples. Using CWE-specific vulnerability fingerprints and sequence matching, 6 of 12 samples (50\%) achieve vulnerability class matches, with high similarity for command injection (0.806), XSS (1.000), and weak cryptography (1.000). Gaps exist for CWE-20 (subdomain spoofing patterns) and CWE-918 (input validation patterns not targeted by current operators).
+
+\textbf{Ground truth establishment.} Running CWEval expert tests against their secure and insecure code establishes ground truth for 12 of 13 testable pairs (92\%). The single failure (CWE-327 \texttt{encrypt\_data}) requires the \texttt{cryptography} library not available in our test environment.
+
+\textbf{Attack vector coverage.} Comparing attack categories reveals full coverage (Jaccard 1.0) for CWE-22 and CWE-327, partial coverage for CWE-78 (0.5) and CWE-79 (0.5), and gaps in CWE-502 (SecMutBench tests pickle; CWEval tests YAML gadgets). The average Jaccard coverage of 0.476 identifies specific areas for operator expansion.
+
+
+%% ====================================================================
+%% VIII. THREATS TO VALIDITY
+%% ====================================================================
+\section{Threats to Validity}\label{sec:threats}
+
+\textbf{Internal validity.} Kill classification relies on error message pattern matching, which may misclassify kills where security-relevant terms appear incidentally or where genuine security assertions use non-standard terminology. We mitigate this with operator-specific keyword lists rather than generic patterns. Mutation operator coverage may not capture all realistic vulnerability patterns; our CWEval validation identifies specific gaps (CWE-20 subdomain spoofing, CWE-502 YAML gadgets).
+
+\textbf{External validity.} SecMutBench covers 14 CWEs in Python, limiting generalization to other vulnerability types and languages. The 307-sample dataset, while larger than several comparable benchmarks, may not capture the full diversity of real-world vulnerability patterns. Model selection focuses on accessible models; results may differ for models not evaluated.
+
+\textbf{Construct validity.} SMS assumes that semantic kills indicate genuine security awareness, but a test could contain security keywords without meaningful understanding. The mock-based execution environment may affect test behavior differently than production environments. We address this by running CWEval validation without mocks, demonstrating consistent results.
+
+
+%% ====================================================================
+%% IX. CONCLUSION
+%% ====================================================================
+\section{Conclusion}\label{sec:conclusion}
+
+We presented SecMutBench, a mutation-based benchmark for evaluating LLM-generated security tests. Through 19 security mutation operators applied to 307 Python programs across 14 CWE categories, we demonstrated that traditional mutation scores substantially overstate LLM security testing capability. The Security Mutation Score (SMS) metric and operator-aware kill classification reveal that the majority of mutant kills arise from crashes and incidental assertions rather than genuine security awareness.
+
+\todo{Add 1--2 sentences summarizing key quantitative findings from results.}
+
+Comparison with Bandit shows that static analysis and mutation testing provide complementary coverage, with static tools excelling on pattern-based vulnerabilities while mutation testing captures logic-flaw detection capability. Our external validation against CWEval expert tests confirms the pipeline's integrity while identifying specific coverage gaps.
+
+SecMutBench is publicly available with pre-generated mutants, executable evaluation framework, and CWE-specific mock environments to support reproducible security test evaluation research.
+
+\textbf{Future work.} We plan to expand CWE coverage, add support for additional languages, investigate few-shot and chain-of-thought prompting effects on SMS, and explore agentic approaches where models iteratively refine tests based on mutation survival feedback.
+
+
+%% ====================================================================
+%% REFERENCES
+%% ====================================================================
+\balance
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{refs}
+
+\end{document}

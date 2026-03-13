@@ -31,12 +31,23 @@ class Mutant:
     line_number: Optional[int] = None
     killed: bool = False
     error: Optional[str] = None
+    variant_type: Optional[str] = None  # "pass_variant", "removal", etc.
+    mutant_category: Optional[str] = None  # "cwe_specific" or "generic"
 
     def __post_init__(self):
         if not self.id:
             # Generate ID from hash of mutated code
             hash_input = f"{self.operator}:{self.mutated_code}"
             self.id = hashlib.md5(hash_input.encode()).hexdigest()[:8]
+        if self.variant_type is None:
+            self.variant_type = self._infer_variant_type()
+
+    def _infer_variant_type(self) -> str:
+        """Infer variant type from description patterns."""
+        desc = self.description.lower()
+        if "pass instead of raise" in desc or "dead check" in desc or "(dead " in desc:
+            return "pass_variant"
+        return "removal"
 
 
 @dataclass
@@ -123,7 +134,7 @@ class MutationEngine:
         mutant_count = 0
         for name, operator in operators_to_use.items():
             try:
-                mutations = operator.mutate(code)
+                mutations = operator.generate_valid_mutants(code)
                 result.operators_applied.append(name)
 
                 for mutated_code, description in mutations:
@@ -153,7 +164,7 @@ class MutationEngine:
                 if name not in self.operator_names and name not in [m.operator for m in result.mutants]:
                     try:
                         if operator.applies_to(code):
-                            mutations = operator.mutate(code)
+                            mutations = operator.generate_valid_mutants(code)
                             if mutations:
                                 result.operators_applied.append(name)
                                 for mutated_code, description in mutations:

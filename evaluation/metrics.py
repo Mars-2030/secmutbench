@@ -80,7 +80,7 @@ class SampleMetrics:
     sample_id: str
     cwe: str
     difficulty: str
-    vulnerability_detected: bool = False
+    vuln_detected: bool = False
     mutation: MutationMetrics = field(default_factory=MutationMetrics)
     coverage: CoverageMetrics = field(default_factory=CoverageMetrics)
     test_count: int = 0
@@ -93,7 +93,7 @@ class AggregateMetrics:
     """Aggregated metrics across multiple samples."""
     samples: int = 0
     avg_mutation_score: float = 0.0
-    avg_vulnerability_detection: float = 0.0
+    avg_vuln_detection: float = 0.0
     avg_line_coverage: float = 0.0
     avg_branch_coverage: float = 0.0
     total_mutants: int = 0
@@ -175,12 +175,28 @@ def calculate_metrics(
 
     total_survived = total_mutants - total_killed
 
+    # Secure-pass rate: fraction of samples whose tests pass on secure code
+    secure_pass_count = sum(
+        1 for r in sample_results
+        if r.get("metrics", {}).get("secure_passes", False)
+    )
+    secure_pass_rate = secure_pass_count / len(sample_results) if sample_results else 0.0
+
+    # Effective MS = avg_ms * secure_pass_rate
+    # This corrects for the M2 gate: MS is only computed over passing samples,
+    # so raw avg_ms is inflated when secure_pass_rate is low.
+    avg_ms = statistics.mean(mutation_scores) if mutation_scores else 0.0
+    effective_mutation_score = avg_ms * secure_pass_rate
+
     return {
         "samples": len(sample_results),
         "valid_mutation_scores": valid_mutation_scores,  # Samples with non-None mutation score
         "samples_with_scores": total_samples_with_scores,  # Total samples that attempted mutation
-        "avg_mutation_score": statistics.mean(mutation_scores) if mutation_scores else 0.0,
+        "avg_mutation_score": avg_ms,
         "std_mutation_score": statistics.stdev(mutation_scores) if len(mutation_scores) > 1 else 0.0,
+        "effective_mutation_score": effective_mutation_score,
+        "secure_pass_rate": secure_pass_rate,
+        "secure_pass_count": secure_pass_count,
         "avg_vuln_detection": statistics.mean(vuln_detections) if vuln_detections else 0.0,
         "avg_line_coverage": statistics.mean(line_coverages) if line_coverages else 0.0,
         "avg_branch_coverage": statistics.mean(branch_coverages) if branch_coverages else 0.0,
@@ -243,6 +259,68 @@ def aggregate_by_difficulty(
         aggregated[difficulty]["samples_count"] = len(results)
 
     return aggregated
+
+
+def aggregate_by_source_type(
+    sample_results: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Aggregate metrics by source type (original vs variation).
+
+    This enables reporting per-original-sample metrics alongside full-dataset
+    metrics, addressing construct validity concerns from LLM-generated variations.
+
+    Args:
+        sample_results: List of per-sample result dicts (must include 'source_type')
+
+    Returns:
+        Dict mapping source_type to aggregated metrics
+    """
+    by_source = defaultdict(list)
+
+    for result in sample_results:
+        source_type = result.get("source_type", "unknown")
+        by_source[source_type].append(result)
+
+    aggregated = {}
+    for source_type, results in by_source.items():
+        aggregated[source_type] = calculate_metrics(results)
+        aggregated[source_type]["samples_count"] = len(results)
+
+    return aggregated
+
+
+def aggregate_by_mutant_category(
+    sample_results: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Aggregate kill rates by mutant category (cwe_specific vs generic).
+
+    This distinguishes between CWE-specific and generic mutation kills,
+    enabling separate reporting of security-aware vs guard-removal detection.
+
+    Args:
+        sample_results: List of per-sample result dicts
+
+    Returns:
+        Dict mapping mutant_category to kill/survival statistics
+    """
+    category_stats = defaultdict(lambda: {"total": 0, "killed": 0, "survived": 0})
+
+    for result in sample_results:
+        mutant_details = result.get("mutant_details", [])
+        for mutant in mutant_details:
+            category = mutant.get("mutant_category", "unknown")
+            category_stats[category]["total"] += 1
+            if mutant.get("killed", False):
+                category_stats[category]["killed"] += 1
+            else:
+                category_stats[category]["survived"] += 1
+
+    for category, stats in category_stats.items():
+        stats["kill_rate"] = stats["killed"] / stats["total"] if stats["total"] > 0 else 0.0
+
+    return dict(category_stats)
 
 
 def aggregate_by_operator(
@@ -383,6 +461,7 @@ def calculate_kill_breakdown(
 
     Kill types:
     - semantic: AssertionError with security-related terms (validates security property)
+    - functional: Test expected exception not raised (behavioral detection via pytest.raises)
     - assertion_incidental: AssertionError without security terms (caught change incidentally)
     - crash: ImportError, TypeError, etc. (code structure issue)
     - other: Any other exception
@@ -395,20 +474,30 @@ def calculate_kill_breakdown(
         - total_mutants: Total mutants generated
         - total_killed: Total mutants killed (any reason)
         - semantic_kills: Kills with security-aware assertions
+        - functional_kills: Kills from pytest.raises (expected exception not raised)
         - incidental_kills: Assertion kills without security terms
         - crash_kills: Kills due to crashes
         - other_kills: Other kills
         - mutation_score: Overall mutation score
         - security_mutation_score: Semantic kills / total mutants
+        - functional_score: Functional kills / total mutants
         - incidental_score: Incidental kills / total mutants
         - crash_score: Crash kills / total mutants
     """
     total_mutants = 0
     total_killed = 0
     semantic_kills = 0
+    functional_kills = 0
     incidental_kills = 0
     crash_kills = 0
     other_kills = 0
+    # Track semantic kills by classification layer for strict vs relaxed SMS
+    semantic_by_layer = {
+        "mock_observability": 0,
+        "operator_keyword": 0,
+        "generic_keyword": 0,
+        "attack_payload": 0,
+    }
 
     for result in sample_results:
         mutant_details = result.get("mutant_details", [])
@@ -419,6 +508,11 @@ def calculate_kill_breakdown(
                 kill_type = mutant.get("kill_type", "other")
                 if kill_type == "semantic":
                     semantic_kills += 1
+                    layer = mutant.get("classification_layer", "operator_keyword")
+                    if layer in semantic_by_layer:
+                        semantic_by_layer[layer] += 1
+                elif kill_type == "functional":
+                    functional_kills += 1
                 elif kill_type == "assertion_incidental":
                     incidental_kills += 1
                 elif kill_type == "crash":
@@ -426,29 +520,42 @@ def calculate_kill_breakdown(
                 else:
                     other_kills += 1
 
+    _zero = {
+        "total_mutants": 0,
+        "total_killed": 0,
+        "semantic_kills": 0,
+        "semantic_by_layer": semantic_by_layer,
+        "functional_kills": 0,
+        "incidental_kills": 0,
+        "crash_kills": 0,
+        "other_kills": 0,
+        "mutation_score": None,
+        "security_mutation_score": None,
+        "security_mutation_score_strict": None,
+        "functional_score": None,
+        "incidental_score": None,
+        "crash_score": None,
+    }
+
     if total_mutants == 0:
-        return {
-            "total_mutants": 0,
-            "total_killed": 0,
-            "semantic_kills": 0,
-            "incidental_kills": 0,
-            "crash_kills": 0,
-            "other_kills": 0,
-            "mutation_score": None,
-            "security_mutation_score": None,
-            "incidental_score": None,
-            "crash_score": None,
-        }
+        return _zero
+
+    # strict SMS excludes generic_keyword matches (stronger evidence only)
+    strict_semantic = semantic_kills - semantic_by_layer["generic_keyword"]
 
     return {
         "total_mutants": total_mutants,
         "total_killed": total_killed,
         "semantic_kills": semantic_kills,
+        "semantic_by_layer": semantic_by_layer,
+        "functional_kills": functional_kills,
         "incidental_kills": incidental_kills,
         "crash_kills": crash_kills,
         "other_kills": other_kills,
         "mutation_score": total_killed / total_mutants,
         "security_mutation_score": semantic_kills / total_mutants,
+        "security_mutation_score_strict": strict_semantic / total_mutants,
+        "functional_score": functional_kills / total_mutants,
         "incidental_score": incidental_kills / total_mutants,
         "crash_score": crash_kills / total_mutants,
     }
@@ -514,7 +621,9 @@ def format_metrics_report(
         "",
         "Overall Metrics:",
         f"  Samples Evaluated:     {metrics.get('samples', 0)}",
-        f"  Avg Mutation Score:    {metrics.get('avg_mutation_score', 0):.2%}",
+        f"  Avg Mutation Score:    {metrics.get('avg_mutation_score', 0):.2%}  (over M2-passing samples only)",
+        f"  Effective Mut. Score:  {metrics.get('effective_mutation_score', 0):.2%}  (= avg_MS * secure_pass_rate)",
+        f"  Secure-Pass Rate:      {metrics.get('secure_pass_rate', 0):.2%}  ({metrics.get('secure_pass_count', 0)}/{metrics.get('samples', 0)})",
         f"  Std Mutation Score:    {metrics.get('std_mutation_score', 0):.2%}",
         f"  Avg Vuln Detection:    {metrics.get('avg_vuln_detection', 0):.2%}",
         "",
@@ -533,10 +642,12 @@ def format_metrics_report(
         lines.extend([
             "Kill Breakdown:",
             f"  Semantic (security):   {kb.get('semantic_kills', 0)}",
+            f"  Functional (behavior): {kb.get('functional_kills', 0)}",
             f"  Incidental:            {kb.get('incidental_kills', 0)}",
             f"  Crash:                 {kb.get('crash_kills', 0)}",
             f"  Other:                 {kb.get('other_kills', 0)}",
             f"  Security Mut. Score:   {kb.get('security_mutation_score', 0):.2%}",
+            f"  Functional Score:      {kb.get('functional_score', 0):.2%}",
             f"  Crash Score:           {kb.get('crash_score', 0):.2%}",
             "",
         ])

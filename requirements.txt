@@ -10,9 +10,6 @@ hypothesis>=6.0.0
 # Static Security Analysis
 bandit>=1.7.0
 
-# AST manipulation for mutation operators
-# (astunparse is optional, standard ast module is used primarily)
-
 # Data handling
 datasets>=2.14.0  # For downloading SecurityEval/CyberSecEval
 
@@ -20,8 +17,24 @@ datasets>=2.14.0  # For downloading SecurityEval/CyberSecEval
 openai>=1.0.0
 anthropic>=0.18.0
 
-# Optional: Cryptography testing
+# Cryptography testing
 pycryptodome>=3.19.0
+cryptography>=41.0.0
+
+# HTTP / Web
+requests>=2.31.0
+lxml>=4.9.0
+
+# Serialization
+pyyaml>=6.0.0
+
+# Authentication / JWT
+pyjwt>=2.8.0
+bcrypt>=4.0.0
+
+# Password hashing
+argon2-cffi>=23.1.0
 
 # Utilities
 tqdm>=4.65.0
+wrapt-timeout-decorator>=1.4.0

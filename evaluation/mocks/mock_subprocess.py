@@ -59,6 +59,11 @@ class MockSubprocess:
         """Base exception for subprocess errors."""
         pass
 
+    # subprocess module constants
+    PIPE = -1
+    STDOUT = -2
+    DEVNULL = -3
+
     # Common injection patterns to detect
     INJECTION_PATTERNS = [
         ";", "&&", "||", "|", "`", "$(",  # Command chaining/substitution
@@ -73,8 +78,21 @@ class MockSubprocess:
         "chmod ", "chown ", "sudo ",
     ]
 
+    # Security-relevant attributes for observability tracking
+    SECURITY_ATTRS = {"last_shell", "last_command", "injection_detected", "dangerous_command_detected"}
+
     def __init__(self):
+        # Initialize security attribute access tracking
+        object.__setattr__(self, "_accessed_security_attrs", set())
         self.reset()
+
+    def __getattribute__(self, name):
+        """Track access to security-relevant attributes."""
+        value = object.__getattribute__(self, name)
+        if name in MockSubprocess.SECURITY_ATTRS:
+            accessed = object.__getattribute__(self, "_accessed_security_attrs")
+            accessed.add(name)
+        return value
 
     def reset(self):
         """Reset all state."""
@@ -84,6 +102,10 @@ class MockSubprocess:
         self.commands_executed: List[dict] = []
         self.injection_detected: bool = False
         self.dangerous_command_detected: bool = False
+
+    def reset_security_tracking(self):
+        """Reset security attribute access tracking."""
+        object.__setattr__(self, "_accessed_security_attrs", set())
 
     def run(
         self,
@@ -123,20 +145,24 @@ class MockSubprocess:
         # Check for injection patterns
         command_str = args if isinstance(args, str) else " ".join(args)
 
-        self.injection_detected = False
-        self.dangerous_command_detected = False
+        # H6 fix: Use cumulative OR — don't reset on every call
+        new_injection = False
+        new_dangerous = False
 
         if shell and isinstance(args, str):
             # shell=True with string - vulnerable to injection
             for pattern in self.INJECTION_PATTERNS:
                 if pattern in args:
-                    self.injection_detected = True
+                    new_injection = True
                     break
 
             for dangerous in self.DANGEROUS_COMMANDS:
                 if dangerous.lower() in args.lower():
-                    self.dangerous_command_detected = True
+                    new_dangerous = True
                     break
+
+        self.injection_detected = self.injection_detected or new_injection
+        self.dangerous_command_detected = self.dangerous_command_detected or new_dangerous
 
         # Record execution history
         self.commands_executed.append({

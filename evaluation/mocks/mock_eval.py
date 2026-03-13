@@ -45,8 +45,21 @@ class MockEval:
         "compile(",
     ]
 
+    # Security-relevant attributes for observability tracking
+    SECURITY_ATTRS = {"last_code", "unsafe_eval_called", "unsafe_exec_called", "injection_detected"}
+
     def __init__(self):
+        # Initialize security attribute access tracking
+        object.__setattr__(self, "_accessed_security_attrs", set())
         self.reset()
+
+    def __getattribute__(self, name):
+        """Track access to security-relevant attributes."""
+        value = object.__getattribute__(self, name)
+        if name in MockEval.SECURITY_ATTRS:
+            accessed = object.__getattribute__(self, "_accessed_security_attrs")
+            accessed.add(name)
+        return value
 
     def reset(self):
         """Reset all state."""
@@ -58,6 +71,10 @@ class MockEval:
         self.last_code: Optional[str] = None
         self.injection_detected: bool = False
         self.operations: List[Dict[str, Any]] = []
+
+    def reset_security_tracking(self):
+        """Reset security attribute access tracking."""
+        object.__setattr__(self, "_accessed_security_attrs", set())
 
     def _check_injection(self, code: str) -> bool:
         """Check if code contains injection patterns."""

@@ -28,6 +28,7 @@ from .mock_auth import MockAuthenticator
 from .mock_crypto import MockCrypto, MockHashObject
 from .mock_deserializer import MockPickle, MockYAML, MockMarshal
 from .mock_eval import MockEval, MockBuiltins
+from .mock_random import MockRandom, MockSecrets
 from . import mock_jwt
 from . import mock_bcrypt
 from . import mock_flask
@@ -61,4 +62,7 @@ __all__ = [
     # Eval/Exec (CWE-94)
     'MockEval',
     'MockBuiltins',
+    # Random (CWE-338)
+    'MockRandom',
+    'MockSecrets',
 ]

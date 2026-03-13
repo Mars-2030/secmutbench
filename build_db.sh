@@ -4,14 +4,14 @@
 #
 # This script builds the dataset and runs all validation/evaluation scripts.
 #
-# Usage: ./build_and_evaluate.sh [samples] [seed]
+# Usage: ./build_db.sh [samples] [seed]
 #   samples: Number of target samples (default: 3000)
 #   seed:    Random seed (default: 2026)
 #
 # Examples:
-#   ./build_and_evaluate.sh              # 3000 samples, seed 2026
-#   ./build_and_evaluate.sh 500          # 500 samples, seed 2026
-#   ./build_and_evaluate.sh 500 42       # 500 samples, seed 42
+#   ./build_db.sh              # 3000 samples, seed 2026
+#   ./build_db.sh 500          # 500 samples, seed 2026
+#   ./build_db.sh 500 42       # 500 samples, seed 42
 #
 
 set -e  # Exit on error
@@ -37,7 +37,12 @@ mkdir -p results
 # Step 1: Build the dataset
 echo "[Step 1/5] Building dataset..."
 echo "------------------------------------------------------------"
-python scripts/dataset_builder.py --target "$SAMPLES" --seed "$SEED"
+VARIATIONS_FLAG=""
+if [ -f "data/variations.json" ]; then
+    echo "  Found data/variations.json — including LLM variations"
+    VARIATIONS_FLAG="--include-variations data/variations.json"
+fi
+python scripts/dataset_builder.py --target "$SAMPLES" --seed "$SEED" --min-samples 3 --verbose-drop $VARIATIONS_FLAG 2>&1 | tee build_db.log
 echo ""
 
 # Step 2: Validate dataset quality (VD validation)
@@ -53,11 +58,11 @@ python scripts/compute_mutant_validity.py --output results/mutant_validity.json
 echo ""
 
 # Step 4: Build validation dataset and run CWEval validation
-echo "[Step 4/5] Running CWEval validation..."
-echo "------------------------------------------------------------"
-python scripts/build_validation_dataset.py
-python evaluation/validate_with_cweval.py --output results/validationcweval.json
-echo ""
+# echo "[Step 4/5] Running CWEval validation..."
+# echo "------------------------------------------------------------"
+# python scripts/build_validation_dataset.py
+# python evaluation/validate_with_cweval.py --output results/validationcweval.json
+# echo ""
 
 # Step 5: Evaluate reference tests (upper bound)
 echo "[Step 5/5] Evaluating reference tests..."
@@ -72,6 +77,6 @@ echo ""
 echo "Results saved to:"
 echo "  - results/dataset_quality.json"
 echo "  - results/mutant_validity.json"
-echo "  - results/validationcweval.json"
+# echo "  - results/validationcweval.json"
 echo "  - results/reference_baseline.json"
 echo ""

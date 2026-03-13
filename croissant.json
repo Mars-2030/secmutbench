@@ -6,12 +6,12 @@
   },
   "@type": "sc:Dataset",
   "name": "SecMutBench",
-  "description": "A benchmark for evaluating LLM-generated security tests using mutation testing.",
+  "description": "A benchmark for evaluating LLM-generated security tests using mutation testing. Contains 339 Python code samples across 30 CWE types with 1,869 pre-generated security mutants.",
   "license": "https://opensource.org/licenses/MIT",
   "url": "https://github.com/secmutbench/SecMutBench",
-  "version": "2.1",
+  "version": "2.8.0",
   "datePublished": "2026-01-31",
-  "dateModified": "2026-01-31",
+  "dateModified": "2026-03-13",
   "creator": {
     "@type": "Organization",
     "name": "SecMutBench Team"
@@ -19,16 +19,17 @@
   "distribution": [
     {
       "@type": "cr:FileObject",
-      "name": "dataset.json",
-      "contentUrl": "data/dataset.json",
+      "name": "dataset2.json",
+      "contentUrl": "data/dataset2.json",
       "encodingFormat": "application/json",
       "sha256": ""
     },
     {
       "@type": "cr:FileObject",
-      "name": "samples.json",
-      "contentUrl": "data/samples.json",
-      "encodingFormat": "application/json"
+      "name": "dataset.json",
+      "contentUrl": "data/dataset.json",
+      "encodingFormat": "application/json",
+      "sha256": ""
     },
     {
       "@type": "cr:FileObject",
@@ -53,7 +54,7 @@
     {
       "@type": "cr:RecordSet",
       "name": "samples",
-      "description": "Security code samples with tests",
+      "description": "Security code samples with pre-generated mutants and reference tests",
       "field": [
         {
           "@type": "cr:Field",
@@ -73,12 +74,14 @@
         {
           "@type": "cr:Field",
           "name": "difficulty",
-          "dataType": "sc:Text"
+          "dataType": "sc:Text",
+          "description": "Complexity-based difficulty: easy, medium, or hard"
         },
         {
           "@type": "cr:Field",
-          "name": "prompt",
-          "dataType": "sc:Text"
+          "name": "source_type",
+          "dataType": "sc:Text",
+          "description": "Sample origin: SecMutBench, CWEval, SecurityEval, or LLM_Variation"
         },
         {
           "@type": "cr:Field",
@@ -87,12 +90,12 @@
         },
         {
           "@type": "cr:Field",
-          "name": "insecure_code",
+          "name": "secure_code",
           "dataType": "sc:Text"
         },
         {
           "@type": "cr:Field",
-          "name": "secure_code",
+          "name": "insecure_code",
           "dataType": "sc:Text"
         },
         {
@@ -104,6 +107,18 @@
           "@type": "cr:Field",
           "name": "security_tests",
           "dataType": "sc:Text"
+        },
+        {
+          "@type": "cr:Field",
+          "name": "mutation_operators",
+          "dataType": "sc:Text",
+          "description": "Array of applicable mutation operator names"
+        },
+        {
+          "@type": "cr:Field",
+          "name": "mutants",
+          "dataType": "sc:Text",
+          "description": "Array of pre-generated mutant objects with id, operator, description, mutated_code, and mutant_category"
         },
         {
           "@type": "cr:Field",
@@ -120,20 +135,26 @@
     "code-generation",
     "benchmark",
     "python",
-    "cwe"
+    "cwe",
+    "security-testing",
+    "llm-evaluation"
   ],
-  "measurementTechnique": "Mutation testing with security-specific operators",
+  "measurementTechnique": "Mutation testing with 25 security-specific operators across 30 CWE types",
   "variableMeasured": [
     "mutation_score",
-    "vulnerability_detection_rate"
+    "effective_mutation_score",
+    "vulnerability_detection_rate",
+    "security_mutation_score",
+    "security_relevance",
+    "test_quality"
   ],
   "includedInDataCatalog": {
     "@type": "DataCatalog",
     "name": "HuggingFace Datasets"
   },
   "size": {
-    "value": 180,
+    "value": 339,
     "unitText": "samples"
   },
-  "temporalCoverage": "2024/2025"
+  "temporalCoverage": "2024/2026"
 }

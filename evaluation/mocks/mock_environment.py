@@ -37,8 +37,21 @@ class MockEnvironment:
         "AWS_SECRET", "AZURE_KEY", "GCP_KEY",
     ]
 
+    # Security-relevant attributes for observability tracking
+    SECURITY_ATTRS = {"last_key", "sensitive_accessed", "access_log"}
+
     def __init__(self):
+        # Initialize security attribute access tracking
+        object.__setattr__(self, "_accessed_security_attrs", set())
         self.reset()
+
+    def __getattribute__(self, name):
+        """Track access to security-relevant attributes."""
+        value = object.__getattribute__(self, name)
+        if name in MockEnvironment.SECURITY_ATTRS:
+            accessed = object.__getattribute__(self, "_accessed_security_attrs")
+            accessed.add(name)
+        return value
 
     def reset(self):
         """Reset all state to defaults."""
@@ -58,6 +71,10 @@ class MockEnvironment:
         self.last_default: Optional[str] = None
         self.access_log: List[str] = []
         self.sensitive_accessed: List[str] = []
+
+    def reset_security_tracking(self):
+        """Reset security attribute access tracking."""
+        object.__setattr__(self, "_accessed_security_attrs", set())
 
     def get(self, key: str, default: Optional[str] = None) -> Optional[str]:
         """
@@ -179,8 +196,18 @@ class MockOSPath:
     """Mock os.path module."""
 
     def join(self, *args) -> str:
-        """Mock os.path.join()."""
-        return "/".join(str(a).strip("/") for a in args if a)
+        """Mock os.path.join() — M10 fix: handle absolute paths like real os.path.join."""
+        result = ""
+        for a in args:
+            s = str(a)
+            if s.startswith("/"):
+                # Absolute path resets — matches real os.path.join behavior
+                result = s
+            elif result:
+                result = result.rstrip("/") + "/" + s
+            else:
+                result = s
+        return result
 
     def exists(self, path: str) -> bool:
         """Mock os.path.exists() - always returns True for testing."""

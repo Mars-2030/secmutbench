@@ -35,9 +35,120 @@ class SecurityMutationOperator(ABC):
         """
         pass
 
+    def generate_valid_mutants(self, code: str) -> List[Tuple[str, str]]:
+        """
+        Generate mutants and filter out any that don't compile.
+
+        This wraps mutate() with a post-compilation gate to ensure
+        all returned mutants are syntactically valid Python.
+        """
+        raw_mutants = self.mutate(code)
+        valid = []
+        for mutant_code, description in raw_mutants:
+            try:
+                compile(mutant_code, "<mutant>", "exec")
+                valid.append((mutant_code, description))
+            except SyntaxError:
+                pass  # Silently drop non-compiling mutants
+        return valid
+
     def get_mutation_locations(self, code: str) -> List[int]:
         """Return line numbers where mutations can be applied"""
         return []
+
+
+def remove_if_block_safely(code: str, pattern: str, flags: int = 0) -> List[Tuple[str, str, re.Match]]:
+    """
+    Remove if-blocks matching the pattern, filtering out non-compiling results.
+
+    This removes the matched block and verifies the result compiles.
+    Non-compiling mutants are silently skipped.
+
+    Returns:
+        List of (mutated_code, description_suffix, match) tuples
+    """
+    results = []
+    matches = list(re.finditer(pattern, code, flags))
+
+    for match in matches:
+        # Simply remove the matched block
+        mutant = code[:match.start()] + code[match.end():]
+
+        # Verify the result compiles before including it
+        try:
+            ast.parse(mutant)
+            results.append((mutant, "", match))
+        except SyntaxError:
+            # Skip non-compiling mutants - this is expected for some patterns
+            pass
+
+    return results
+
+
+def replace_if_body_with_pass(code: str, pattern: str, flags: int = 0) -> List[Tuple[str, str, re.Match]]:
+    """
+    Replace the body of if-blocks matching the pattern with 'pass'.
+
+    Creates "dead check" mutants where the security check exists
+    but its enforcement action (raise/return) is replaced with pass.
+
+    Returns:
+        List of (mutated_code, description_suffix, match) tuples
+    """
+    results = []
+    matches = list(re.finditer(pattern, code, flags))
+
+    for match in matches:
+        matched_text = match.group()
+        # Find the raise/return line and replace with pass
+        body_match = re.search(r'(\n(\s+))(raise|return)\b[^\n]*', matched_text)
+        if body_match:
+            indent = body_match.group(2)
+            new_text = matched_text[:body_match.start()] + '\n' + indent + 'pass\n'
+            mutant = code[:match.start()] + new_text + code[match.end():]
+            try:
+                ast.parse(mutant)
+                results.append((mutant, " (dead check)", match))
+            except SyntaxError:
+                pass
+
+    return results
+
+
+def replace_if_else_with_if_body(code: str, pattern: re.Pattern) -> List[Tuple[str, str]]:
+    """
+    Replace an if/else block with just the if-body, dedented to the if-statement's level.
+
+    The pattern must have named groups 'indent' and 'if_body'.
+    Returns list of (mutated_code, description) tuples that compile successfully.
+    """
+    results = []
+    for match in pattern.finditer(code):
+        indent = match.group('indent')
+        if_body = match.group('if_body')
+        # Dedent the if-body: remove one level of indentation (the extra indent inside the if)
+        dedented_lines = []
+        for line in if_body.split('\n'):
+            if line.strip():
+                # Remove one extra indentation level beyond the if-indent
+                if line.startswith(indent + '    '):
+                    dedented_lines.append(indent + line[len(indent) + 4:])
+                elif line.startswith(indent + '\t'):
+                    dedented_lines.append(indent + line[len(indent) + 1:])
+                else:
+                    dedented_lines.append(line)
+            else:
+                dedented_lines.append(line)
+        dedented_body = '\n'.join(dedented_lines)
+        if not dedented_body.endswith('\n'):
+            dedented_body += '\n'
+        mutant = code[:match.start()] + dedented_body + code[match.end():]
+        try:
+            ast.parse(mutant)
+            results.append((mutant, ""))
+        except SyntaxError:
+            pass
+    return results
 
 
 class PSQLI(SecurityMutationOperator):
@@ -93,6 +204,27 @@ class PSQLI(SecurityMutationOperator):
 
         # Check for sqlalchemy text() with params
         if 'text(' in code and (':' in code or 'bindparams' in code):
+            return True
+
+        # EXPANDED: Handle more SQL patterns from external sources
+        # Pattern: query variable with execute
+        if re.search(r'\w+\s*=\s*["\'].*(?:SELECT|INSERT|UPDATE|DELETE).*["\']', code, re.IGNORECASE):
+            return True
+
+        # Pattern: db connection with query method
+        if re.search(r'\.(?:query|execute|executemany|run|fetch)\s*\(', code):
+            return True
+
+        # Pattern: psycopg2, sqlite3, mysql connector patterns
+        if re.search(r'(?:psycopg2|sqlite3|mysql|pymysql|cx_Oracle)\.connect', code):
+            return True
+
+        # Pattern: SQLAlchemy session patterns
+        if re.search(r'session\.(?:execute|query|add|delete)', code):
+            return True
+
+        # Pattern: Django ORM raw queries
+        if 'objects.raw(' in code or 'connection.cursor()' in code:
             return True
 
         return False
@@ -296,6 +428,80 @@ class PSQLI(SecurityMutationOperator):
                     mutants.append((mutant3, f"[Variant 3] .format() from %s: query '{query_var}'"))
                     break
 
+        # EXPANDED: Handle more SQL patterns from external sources
+
+        # Pattern: ORM/SQLAlchemy filter with kwargs
+        # secure: Model.query.filter_by(id=user_id)
+        # → insecure: Model.query.filter(text(f"id = {user_id}"))
+        filter_by_pattern = r'(\w+)\.query\.filter_by\s*\(([^)]+)\)'
+        for match in re.finditer(filter_by_pattern, code):
+            model = match.group(1)
+            kwargs = match.group(2)
+            # Extract key=value pairs
+            pairs = re.findall(r'(\w+)\s*=\s*(\w+)', kwargs)
+            if pairs:
+                conditions = ' AND '.join([f"{k} = {{{v}}}" for k, v in pairs])
+                mutant = code[:match.start()] + f'{model}.query.filter(text(f"{conditions}"))' + code[match.end():]
+                mutants.append((mutant, "[Expanded] ORM filter_by to raw SQL"))
+
+        # Pattern: Django ORM filter → raw SQL
+        # secure: Model.objects.filter(id=user_id)
+        # → insecure: Model.objects.raw(f"SELECT * FROM model WHERE id = {user_id}")
+        django_filter_pattern = r'(\w+)\.objects\.filter\s*\(([^)]+)\)'
+        for match in re.finditer(django_filter_pattern, code):
+            model = match.group(1)
+            kwargs = match.group(2)
+            pairs = re.findall(r'(\w+)\s*=\s*(\w+)', kwargs)
+            if pairs:
+                conditions = ' AND '.join([f"{k} = {{{v}}}" for k, v in pairs])
+                table = model.lower()
+                mutant = code[:match.start()] + f'{model}.objects.raw(f"SELECT * FROM {table} WHERE {conditions}")' + code[match.end():]
+                mutants.append((mutant, "[Expanded] Django filter to raw SQL"))
+
+        # Pattern: psycopg2/sqlite3 with named parameters
+        # secure: cur.execute("SELECT * FROM users WHERE id = %(id)s", {"id": user_id})
+        # → insecure: cur.execute(f"SELECT * FROM users WHERE id = {user_id}")
+        named_param_pattern = r'\.execute\s*\(\s*["\']([^"\']*%\(\w+\)s[^"\']*)["\'],\s*\{([^}]+)\}\s*\)'
+        for match in re.finditer(named_param_pattern, code):
+            query = match.group(1)
+            params_dict = match.group(2)
+            # Extract param_name: variable mappings
+            mappings = re.findall(r'["\'](\w+)["\']\s*:\s*(\w+)', params_dict)
+            new_query = query
+            for param_name, var_name in mappings:
+                new_query = new_query.replace(f'%({param_name})s', '{' + var_name + '}')
+            mutant = code[:match.start()] + f'.execute(f"{new_query}")' + code[match.end():]
+            mutants.append((mutant, "[Expanded] Named params to f-string"))
+
+        # Pattern: cursor.execute with list params
+        # secure: cursor.execute("SELECT * FROM users WHERE id = ?", [user_id])
+        # → insecure: cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")
+        list_param_pattern = r'\.execute\s*\(\s*["\']([^"\']*\?[^"\']*)["\'],\s*\[([^\]]+)\]\s*\)'
+        for match in re.finditer(list_param_pattern, code):
+            query = match.group(1)
+            params_str = match.group(2)
+            params = [p.strip() for p in params_str.split(',')]
+            new_query = query
+            for param in params:
+                new_query = new_query.replace('?', '{' + param + '}', 1)
+            mutant = code[:match.start()] + f'.execute(f"{new_query}")' + code[match.end():]
+            mutants.append((mutant, "[Expanded] List params to f-string"))
+
+        # Pattern: SQLAlchemy text() with bindparams
+        # secure: db.execute(text("SELECT * FROM users WHERE id = :id").bindparams(id=user_id))
+        # → insecure: db.execute(f"SELECT * FROM users WHERE id = {user_id}")
+        text_bindparams_pattern = r'\.execute\s*\(\s*text\s*\(\s*["\']([^"\']+)["\']\s*\)\.bindparams\s*\(([^)]+)\)\s*\)'
+        for match in re.finditer(text_bindparams_pattern, code):
+            query = match.group(1)
+            params = match.group(2)
+            # Extract param=value pairs
+            mappings = re.findall(r'(\w+)\s*=\s*(\w+)', params)
+            new_query = query
+            for param_name, var_name in mappings:
+                new_query = new_query.replace(f':{param_name}', '{' + var_name + '}')
+            mutant = code[:match.start()] + f'.execute(f"{new_query}")' + code[match.end():]
+            mutants.append((mutant, "[Expanded] SQLAlchemy text/bindparams to f-string"))
+
         return mutants
 
 
@@ -363,6 +569,39 @@ class RVALID(SecurityMutationOperator):
         # Also check for validation patterns in conditionals
         if re.search(r'if\s+(not\s+)?\w*valid\w*\s*\(', code, re.IGNORECASE):
             return True
+
+        # EXPANDED: More validation patterns from external sources
+        # Length validation
+        if re.search(r'if\s+len\s*\([^)]+\)\s*[<>]=?\s*\d+', code):
+            return True
+        # Type checking
+        if re.search(r'isinstance\s*\([^,]+,\s*(str|int|float|bool)', code):
+            return True
+        # None/empty checks
+        if re.search(r'if\s+(not\s+)?\w+\s*:', code) and 'raise' in code:
+            return True
+        # Whitelist checks
+        if re.search(r'if\s+\w+\s+(not\s+)?in\s+\w*(allowed|valid|safe|whitelist)', code, re.IGNORECASE):
+            return True
+        # Django/Flask form validation
+        if '.is_valid()' in code or '.validate()' in code:
+            return True
+        # Werkzeug/Flask secure filename
+        if 'secure_filename' in code:
+            return True
+        # URL validation
+        if 'urlparse' in code and ('scheme' in code or 'netloc' in code):
+            return True
+        # Neutralization via .replace() for CWE-74/CWE-116
+        if re.search(r"\.replace\s*\(\s*['\"]\\\\?[nr]", code):
+            return True
+        # Field allowlist for CWE-915 (mass assignment)
+        if re.search(r'\b(?:ALLOWED_FIELDS|allowed_fields|MODIFIABLE_SETTINGS)\b', code):
+            return True
+        # Path safety checks in archive extraction
+        if 'os.path.isabs' in code or ('".."' in code and 'in' in code):
+            return True
+
         return False
 
     def mutate(self, code: str) -> List[Tuple[str, str]]:
@@ -437,6 +676,41 @@ class RVALID(SecurityMutationOperator):
                 mutant = code[:match.start()] + match.group(1) + ', autoescape=False)' + code[match.end():]
                 mutants.append((mutant, "Disabled Jinja2 autoescaping"))
 
+        # Neutralization via .replace(): remove .replace('\n', ' ') or .replace('\r', ' ')
+        # For CWE-74 (injection neutralization) and CWE-116 (output encoding)
+        replace_pattern = r"\.replace\s*\(\s*['\"]\\\\?[nr]['\"],\s*['\"][^'\"]*['\"]\s*\)"
+        if re.search(replace_pattern, code):
+            mutant = re.sub(replace_pattern, '', code)
+            if mutant != code:
+                mutants.append((mutant, "Removed input neutralization via replace()"))
+
+        # Path safety check in tarfile/zipfile extraction
+        # Pattern: if os.path.isabs(entry.name) or ".." in entry.name: return False
+        path_safety = r'([ \t]*)if\s+os\.path\.isabs\s*\([^)]+\)\s+or\s+["\']\.\.["\']\s+in\s+\w+[^:]*:\s*\n\s*(return|raise|continue)[^\n]*\n'
+        for match in re.finditer(path_safety, code):
+            indent = match.group(1)
+            # Replace with pass instead of removing to avoid empty loop bodies
+            mutant = code[:match.start()] + indent + "pass  # path check removed\n" + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "Removed path traversal check in archive extraction"))
+            except SyntaxError:
+                pass
+
+        # Whitelist/allowlist field filtering (CWE-915 mass assignment)
+        # Pattern: if key not in ALLOWED_FIELDS: continue/raise
+        allowlist_skip = r'if\s+\w+\s+not\s+in\s+(?:ALLOWED_FIELDS|allowed_fields|MODIFIABLE_SETTINGS|allowed)\s*:\s*\n\s*continue\n'
+        for match in re.finditer(allowlist_skip, code):
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "Removed field allowlist check (mass assignment)"))
+
+        # Pattern: for key in data: if key in ALLOWED_FIELDS → accept all
+        allowlist_check = r'if\s+\w+\s+in\s+(?:ALLOWED_FIELDS|allowed_fields|allowed)\s*:\s*\n'
+        for match in re.finditer(allowlist_check, code):
+            # Replace the check with always-true
+            mutant = code[:match.start()] + 'if True:\n' + code[match.end():]
+            mutants.append((mutant, "Bypassed field allowlist (mass assignment)"))
+
         return mutants
 
 
@@ -461,44 +735,46 @@ class INPUTVAL(SecurityMutationOperator):
         )
 
     def applies_to(self, code: str) -> bool:
-        indicators = [
-            'if', '<', '>', '<=', '>=', '< 0', '> 0',
-            'int(', 'float(', 'ValueError', 'TypeError',
-            'range', 'between', 'valid', 'invalid',
-            '.isdigit()', '.isnumeric()', '.isalpha()',
-        ]
-        # Need at least a comparison with a number
+        # Check for number comparisons
         if re.search(r'if\s+.*[<>]=?\s*\d+', code):
             return True
+        # Check for error handling (input validation)
         if 'ValueError' in code or 'TypeError' in code:
             return True
-        return any(x in code for x in ['.isdigit()', '.isnumeric()', 'int(', 'float('])
+        # Check for type conversion functions
+        if any(x in code for x in ['.isdigit()', '.isnumeric()', 'int(', 'float(']):
+            return True
+        # Check for URL/IP validation patterns
+        if any(x in code for x in ['urlparse', 'ipaddress.ip_address', '.scheme', '.netloc']):
+            return True
+        # Check for regex validation
+        if 're.match(' in code and 'raise ValueError' in code:
+            return True
+        # Check for string contains validation (path traversal prevention)
+        if any(x in code for x in ['".." in', '"/" in', '"\\\\" in']):
+            return True
+        return False
 
     def mutate(self, code: str) -> List[Tuple[str, str]]:
         mutants = []
 
         # === EASY: Remove simple range check ===
         # Pattern: if age < 0:\n    raise ValueError
+        # Uses helper function for proper indentation handling
         simple_range = r'if\s+\w+\s*[<>]=?\s*\d+\s*:\s*\n\s*(raise|return)[^\n]*\n'
-        matches = list(re.finditer(simple_range, code))
-        for match in matches:
-            mutant = code[:match.start()] + code[match.end():]
+        for mutant, _, _ in remove_if_block_safely(code, simple_range):
             mutants.append((mutant, "[Easy] Removed simple range check"))
 
         # === MEDIUM: Remove compound range check ===
         # Pattern: if age < 0 or age > 150:
         compound_range = r'if\s+\w+\s*[<>]=?\s*\d+\s+or\s+\w+\s*[<>]=?\s*\d+\s*:\s*\n\s*(raise|return)[^\n]*\n'
-        matches = list(re.finditer(compound_range, code))
-        for match in matches:
-            mutant = code[:match.start()] + code[match.end():]
+        for mutant, _, _ in remove_if_block_safely(code, compound_range):
             mutants.append((mutant, "[Medium] Removed compound range validation"))
 
         # === MEDIUM: Remove range with 'not' pattern ===
         # Pattern: if not (0 <= age <= 150):
         not_range = r'if\s+not\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
-        matches = list(re.finditer(not_range, code))
-        for match in matches:
-            mutant = code[:match.start()] + code[match.end():]
+        for mutant, _, _ in remove_if_block_safely(code, not_range):
             mutants.append((mutant, "[Medium] Removed 'not in range' validation"))
 
         # === HARD: Remove try/except ValueError block ===
@@ -510,7 +786,11 @@ class INPUTVAL(SecurityMutationOperator):
             inner_code = match.group(2)
             # Keep the inner code but remove try/except
             mutant = code[:match.start()] + indent + inner_code + '\n' + code[match.end():]
-            mutants.append((mutant, "[Hard] Removed try/except ValueError - invalid input not caught"))
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "[Hard] Removed try/except ValueError - invalid input not caught"))
+            except SyntaxError:
+                pass
 
         # === HARD: Remove type checking (isdigit, isnumeric) ===
         type_check = r'if\s+not\s+\w+\.(isdigit|isnumeric|isalpha|isalnum)\s*\(\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
@@ -525,6 +805,73 @@ class INPUTVAL(SecurityMutationOperator):
         for match in matches:
             mutant = code[:match.start()] + code[match.end():]
             mutants.append((mutant, "[Hard] Removed length validation"))
+
+        # === NEW: Remove URL scheme validation ===
+        # Pattern: if parsed.scheme not in ('http', 'https'):
+        url_scheme = r"if\s+\w+\.scheme\s+not\s+in\s+\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n"
+        matches = list(re.finditer(url_scheme, code))
+        for match in matches:
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "[Medium] Removed URL scheme validation"))
+
+        # === NEW: Remove URL netloc validation ===
+        # Pattern: if not parsed.netloc:
+        url_netloc = r"if\s+not\s+\w+\.netloc\s*:\s*\n\s*(raise|return)[^\n]*\n"
+        matches = list(re.finditer(url_netloc, code))
+        for match in matches:
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "[Medium] Removed URL domain validation"))
+
+        # === NEW: Remove regex match validation ===
+        # Pattern: if not re.match(pattern, ...):
+        regex_check = r"if\s+not\s+re\.match\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n"
+        matches = list(re.finditer(regex_check, code))
+        for match in matches:
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "[Medium] Removed regex pattern validation"))
+
+        # === NEW: Remove string contains check for path traversal ===
+        # Pattern: if ".." in name or "/" in name:
+        string_contains = r'if\s+["\'][^"\']+["\']\s+in\s+\w+(\s+or\s+["\'][^"\']+["\']\s+in\s+\w+)*\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        matches = list(re.finditer(string_contains, code))
+        for match in matches:
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "[Easy] Removed string contains check"))
+
+        # === NEW: Remove ipaddress validation try/except ===
+        # Pattern: try: ipaddress.ip_address(...) except ValueError:
+        ip_check = r'try\s*:\s*\n(\s+)\w+\s*=\s*ipaddress\.ip_address\((\w+)\)\s*\n[^e]*except\s+ValueError[^:]*:\s*\n\s+(raise|return)[^\n]*\n'
+        matches = list(re.finditer(ip_check, code))
+        for match in matches:
+            indent = match.group(1)
+            var_name = match.group(2)  # Extract actual variable name from ipaddress.ip_address(var)
+            # Remove the try/except, keep just a naive parse without validation
+            mutant = code[:match.start()] + f'{indent}parts = {var_name}.split(".")\n{indent}return tuple(int(p) for p in parts)\n' + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "[Hard] Removed IP address validation"))
+            except SyntaxError:
+                pass
+
+        # === NEW: Remove empty/none check ===
+        # Pattern: if not name:
+        empty_check = r'if\s+not\s+\w+\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        matches = list(re.finditer(empty_check, code))
+        for match in matches:
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "[Easy] Removed empty/null check"))
+
+        # === Pass-variant mutants (dead security checks) ===
+        for mutant, _, _ in replace_if_body_with_pass(code, simple_range):
+            mutants.append((mutant, "[Easy] Dead range check (pass instead of raise)"))
+        for mutant, _, _ in replace_if_body_with_pass(code, compound_range):
+            mutants.append((mutant, "[Medium] Dead compound range check (pass instead of raise)"))
+        for mutant, _, _ in replace_if_body_with_pass(code, not_range):
+            mutants.append((mutant, "[Medium] Dead 'not in range' check (pass instead of raise)"))
+        for mutant, _, _ in replace_if_body_with_pass(code, type_check):
+            mutants.append((mutant, "[Hard] Dead type check (pass instead of raise)"))
+        for mutant, _, _ in replace_if_body_with_pass(code, empty_check):
+            mutants.append((mutant, "[Easy] Dead empty/null check (pass instead of raise)"))
 
         return mutants
 
@@ -569,6 +916,9 @@ class SUBDOMAIN_SPOOF(SecurityMutationOperator):
             return True
         # Check for domain suffix validation
         if re.search(r'\.endswith\s*\([^)]*\.(com|org|net|io)', code):
+            return True
+        # Check for isalnum/re.match input validation in URL construction context
+        if ('url' in code_lower or 'domain' in code_lower) and ('.isalnum()' in code or 're.match' in code):
             return True
         return False
 
@@ -636,6 +986,59 @@ class SUBDOMAIN_SPOOF(SecurityMutationOperator):
             mutant = code[:match.start()] + code[match.end():]
             mutants.append((mutant, "[Hard] Removed compound domain validation"))
 
+        # === NEW: Remove re.match validation for subdomain/domain ===
+        # CWEval pattern: if not re.match(r'^[a-zA-Z0-9.-]+$', subdomain): return fallback
+        rematch_domain = r'[ \t]*if\s+not\s+re\.match\s*\([^)]+,\s*\w+\s*\)\s*:\s*\n\s*(return|raise)[^\n]*\n'
+        for match in re.finditer(rematch_domain, code):
+            mutant = code[:match.start()] + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "[Easy] Removed regex domain validation"))
+            except SyntaxError:
+                pass
+
+        # === NEW: Remove netloc == X or netloc.endswith('.' + X) if/else ===
+        # CWEval CWE-20 pattern (may span multiple lines):
+        #   if target_url.netloc == domain_url.netloc or target_url.netloc.endswith(
+        #       '.' + domain_url.netloc
+        #   ):
+        #       return target
+        #   else:
+        #       return fallback
+        # Mutation: always return target (remove else branch)
+        netloc_if_else = re.compile(
+            r'(?P<indent>[ \t]*)if\s+[\w.]+\.netloc\s*==\s*[\w.]+\.netloc\s+or\s+[\w.]+\.netloc\.endswith\s*\('
+            r'.*?\)\s*:\s*\n'
+            r'(?P<if_body>(?:(?P=indent)[ \t]+[^\n]+\n)+)'
+            r'(?P=indent)else\s*:\s*\n'
+            r'(?:(?P=indent)[ \t]+[^\n]+(?:\n|$))+',
+            re.DOTALL
+        )
+        match = netloc_if_else.search(code)
+        if match:
+            # Replace the if/else with just the if-body (always accept)
+            indent = match.group('indent')
+            if_body = match.group('if_body')
+            # Dedent if_body by one level
+            dedented = re.sub(r'^' + indent + r'    ', indent, if_body, flags=re.MULTILINE)
+            mutant = code[:match.start()] + dedented + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "[Medium] Removed netloc domain validation (always accept)"))
+            except SyntaxError:
+                pass
+
+        # === NEW: Remove isalnum() validation for user IDs ===
+        # CWEval CWE-918 pattern: if not user_id or not user_id.isalnum(): return None
+        isalnum_check = r'[ \t]*if\s+not\s+\w+\s+or\s+not\s+\w+\.isalnum\s*\(\)\s*:\s*\n\s*(return|raise)[^\n]*\n'
+        for match in re.finditer(isalnum_check, code):
+            mutant = code[:match.start()] + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "[Easy] Removed isalnum() input validation"))
+            except SyntaxError:
+                pass
+
         return mutants
 
 
@@ -702,18 +1105,17 @@ class WEAKCRYPTO(SecurityMutationOperator):
             target_cwes=["CWE-327", "CWE-328"]
         )
         # Multi-target replacements: strong → [list of weak options]
+        # Only replace algorithm names that appear as string arguments or standalone calls
+        # KDFs (pbkdf2_hmac, bcrypt, scrypt, argon2) are function names — replacing
+        # them with md5/sha1 creates invalid calls (wrong arg count). Removed.
         self.multi_replacements = {
             'sha256': ['md5', 'sha1'],
             'sha384': ['md5', 'sha1'],
-            'sha512': ['md5', 'sha1', 'sha256'],
+            'sha512': ['md5', 'sha1'],  # M7 fix: sha256 is strong per NIST
             'sha3_256': ['md5', 'sha1'],
             'sha3_512': ['md5', 'sha1'],
-            'pbkdf2_hmac': ['md5', 'sha1'],
-            'bcrypt': ['md5', 'sha1'],
-            'scrypt': ['md5', 'sha1'],
-            'argon2': ['md5', 'sha1'],
-            'AES': ['DES'],
-            'Fernet': ['DES'],
+            'AES': ['DES', 'RC4'],
+            'Fernet': ['DES', 'RC4'],
         }
 
     def applies_to(self, code: str) -> bool:
@@ -725,17 +1127,20 @@ class WEAKCRYPTO(SecurityMutationOperator):
     def mutate(self, code: str) -> List[Tuple[str, str]]:
         mutants = []
 
-        # Multi-target algorithm replacement
+        # C3 fix: Use word-boundary regex instead of global str.replace()
+        # This prevents corrupting variable names, comments, and import paths
         for strong, weak_list in self.multi_replacements.items():
             if strong in code:
+                # Use word boundaries to only match algorithm names, not substrings
+                pattern = re.compile(r'\b' + re.escape(strong) + r'\b')
                 for weak in weak_list:
-                    mutant = code.replace(strong, weak)
+                    mutant = pattern.sub(weak, code)
                     if mutant != code:
                         mutants.append((mutant, f"{strong} → {weak}"))
 
             # Case insensitive for some
             elif strong.lower() in code.lower():
-                pattern = re.compile(re.escape(strong), re.IGNORECASE)
+                pattern = re.compile(r'\b' + re.escape(strong) + r'\b', re.IGNORECASE)
                 for weak in weak_list:
                     mutant = pattern.sub(weak, code)
                     if mutant != code:
@@ -757,10 +1162,16 @@ class WEAKCRYPTO(SecurityMutationOperator):
             mutants.append((mutant, f"Reduced iterations from {original_iter} to {weak_iter}"))
 
         # Remove rounds parameter (used by bcrypt, argon2)
-        rounds_pattern = r',\s*rounds\s*=\s*\d+'
-        if re.search(rounds_pattern, code):
+        rounds_pattern = r',\s*rounds\s*=\s*(\d+)'
+        rounds_match = re.search(rounds_pattern, code)
+        if rounds_match:
             mutant = re.sub(rounds_pattern, '', code)
             mutants.append((mutant, "Removed rounds parameter"))
+            # Reduce rounds to 1 (distinct from removal)
+            original_rounds = int(rounds_match.group(1))
+            if original_rounds > 1:
+                mutant2 = re.sub(rounds_pattern, ', rounds=1', code)
+                mutants.append((mutant2, f"Reduced rounds from {original_rounds} to 1"))
 
         return mutants
 
@@ -898,7 +1309,8 @@ class HARDCODE(SecurityMutationOperator):
 
         # === NEW: Dictionary access pattern ===
         # Match: config["password"] or settings["SECRET_KEY"] or data['api_key']
-        dict_pattern = r'(\w+)\s*\[\s*["\'](\w*(?:password|secret|token|key|credential)\w*)["\']\\s*\]'
+        # C4 fix: \\s* → \s* (was matching literal backslash)
+        dict_pattern = r'(\w+)\s*\[\s*["\'](\w*(?:password|secret|token|key|credential)\w*)["\']\s*\]'
         for match in re.finditer(dict_pattern, code, re.IGNORECASE):
             dict_name = match.group(1)
             key_name = match.group(2)
@@ -932,10 +1344,20 @@ class RMAUTH(SecurityMutationOperator):
             'login_required', 'auth_required', 'check_permission', 'has_permission',
             'is_authorized', 'check_token', 'verify_token', 'validate_session',
         ]
+        # Additional security-critical auth patterns
+        self.security_auth_patterns = [
+            'jwt.decode', 'bcrypt.checkpw', 'hmac.compare_digest',
+            'InvalidTokenError', 'expires_at', 'rate_limit',
+        ]
 
     def applies_to(self, code: str) -> bool:
         code_lower = code.lower()
+        # Check traditional auth patterns
         for pattern in self.auth_patterns:
+            if pattern.lower() in code_lower:
+                return True
+        # Check security-critical patterns
+        for pattern in self.security_auth_patterns:
             if pattern.lower() in code_lower:
                 return True
         return False
@@ -945,11 +1367,9 @@ class RMAUTH(SecurityMutationOperator):
 
         for auth_func in self.auth_patterns:
             # Pattern: if not auth_func(): raise/return
+            # Uses helper function for proper indentation handling
             pattern = rf'if\s+not\s+{auth_func}\s*\([^)]*\)\s*:\s*\n(\s+)(raise|return)[^\n]*\n'
-            matches = list(re.finditer(pattern, code, re.IGNORECASE))
-
-            for match in matches:
-                mutant = code[:match.start()] + code[match.end():]
+            for mutant, _, _ in remove_if_block_safely(code, pattern, re.IGNORECASE):
                 mutants.append((mutant, f"Removed authentication check: {auth_func}"))
 
             # Pattern: if auth_func(): ... else: raise
@@ -1022,6 +1442,85 @@ class RMAUTH(SecurityMutationOperator):
             mutant = code[:match.start()] + code[match.end():]
             mutants.append((mutant, "Removed @user_passes_test decorator"))
 
+        # === NEW: JWT token validation bypass ===
+        # Pattern: try: jwt.decode(...) except jwt.InvalidTokenError: raise
+        jwt_try_pattern = r'(\s*)try:\s*\n\s+return\s+jwt\.decode\((\w+)[^)]*\)\s*\n\s+except\s+(?:jwt\.)?(?:InvalidTokenError|PyJWTError|Exception)[^:]*:\s*\n\s+(raise|return)[^\n]*\n'
+        for match in re.finditer(jwt_try_pattern, code):
+            indent = match.group(1)
+            token_var = match.group(2)  # Extract actual token variable name
+            # Replace with base64 decode (insecure - no signature check)
+            replacement = (
+                f'{indent}import base64\n'
+                f'{indent}payload = {token_var}.split(".")[1]\n'
+                f'{indent}return json.loads(base64.b64decode(payload + "=="))\n'
+            )
+            mutant = code[:match.start()] + replacement + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "Bypassed JWT signature verification"))
+            except SyntaxError:
+                pass
+
+        # === NEW: bcrypt.checkpw bypass ===
+        # Use balanced parenthesis matching instead of regex for nested parens
+        if 'bcrypt.checkpw' in code:
+            # Find bcrypt.checkpw( and match balanced parentheses
+            idx = code.find('bcrypt.checkpw(')
+            while idx != -1:
+                # Find matching closing paren
+                paren_start = idx + len('bcrypt.checkpw')
+                depth = 0
+                end = paren_start
+                for i in range(paren_start, len(code)):
+                    if code[i] == '(':
+                        depth += 1
+                    elif code[i] == ')':
+                        depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
+                if end > paren_start:
+                    mutant = code[:idx] + "user['password'] == password" + code[end:]
+                    try:
+                        ast.parse(mutant)
+                        mutants.append((mutant, "Bypassed bcrypt password check with plain comparison"))
+                    except SyntaxError:
+                        pass
+                idx = code.find('bcrypt.checkpw(', idx + 1)
+
+        # === NEW: hmac.compare_digest bypass ===
+        # Pattern: return hmac.compare_digest(...)
+        hmac_pattern = r'hmac\.compare_digest\(([^,]+),\s*([^)]+)\)'
+        for match in re.finditer(hmac_pattern, code):
+            arg1, arg2 = match.group(1), match.group(2)
+            # Replace with simple == (timing attack vulnerable)
+            mutant = code[:match.start()] + f'{arg1.strip()} == {arg2.strip()}' + code[match.end():]
+            mutants.append((mutant, "Replaced hmac.compare_digest with timing-vulnerable =="))
+
+        # === NEW: Session expiry bypass ===
+        # Pattern: if time.time() > session.get('expires_at', 0): ... return False
+        expiry_pattern = r'if\s+time\.time\(\)\s*>\s*session\.get\([^)]+\)\s*:\s*\n\s+[^\n]+\n\s+return\s+False\s*\n'
+        for match in re.finditer(expiry_pattern, code):
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "Removed session expiry check"))
+
+        # === NEW: Rate limit bypass ===
+        # Pattern: if ... attempts >= N: raise ValueError("Too many")
+        rate_limit_pattern = r"if[^:]+attempts[^:]+>=\s*\d+\s*:\s*\n\s+raise\s+ValueError\([^)]*[Tt]oo many[^)]*\)\s*\n"
+        for match in re.finditer(rate_limit_pattern, code):
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "Removed rate limiting check"))
+
+        # === Pass-variant mutants (dead auth checks) ===
+        for auth_func in self.auth_patterns:
+            pattern = rf'if\s+not\s+{auth_func}\s*\([^)]*\)\s*:\s*\n(\s+)(raise|return)[^\n]*\n'
+            for mutant, _, _ in replace_if_body_with_pass(code, pattern, re.IGNORECASE):
+                mutants.append((mutant, f"Dead auth check: {auth_func} (pass instead of raise)"))
+        for mutant, _, _ in replace_if_body_with_pass(code, request_auth_pattern):
+            mutants.append((mutant, "Dead request.user.is_authenticated check (pass instead of raise)"))
+        for mutant, _, _ in replace_if_body_with_pass(code, flask_auth_pattern):
+            mutants.append((mutant, "Dead current_user.is_authenticated check (pass instead of raise)"))
+
         return mutants
 
 
@@ -1060,51 +1559,74 @@ class PATHCONCAT(SecurityMutationOperator):
         if re.search(resolve_pattern, code):
             mutant = re.sub(resolve_pattern, '', code)
             mutants.append((mutant, "[Easy] Removed .resolve() - path not canonicalized"))
+            # Replace .resolve() with .absolute() (no symlink resolution)
+            mutant2 = re.sub(resolve_pattern, '.absolute()', code)
+            if mutant2 != code:
+                mutants.append((mutant2, "[Medium] Replaced .resolve() with .absolute() (no symlink resolution)"))
 
         # === EASY: Remove str().startswith() path validation ===
-        # Pattern: if not str(target).startswith(str(base)):
-        startswith_pattern = r'if\s+not\s+str\([^)]+\)\.startswith\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
-        matches = list(re.finditer(startswith_pattern, code))
-        for match in matches:
-            mutant = code[:match.start()] + code[match.end():]
+        # Uses helper function for proper indentation handling
+        startswith_pattern = r'if\s+not\s+str\(.+?\)\.startswith\s*\(.+?\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for mutant, _, _ in remove_if_block_safely(code, startswith_pattern):
             mutants.append((mutant, "[Easy] Removed path prefix validation"))
 
-        # === EASY: Remove variable.startswith() check ===
-        startswith_var_pattern = r'if\s+not\s+\w+\.startswith\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
-        matches = list(re.finditer(startswith_var_pattern, code))
-        for match in matches:
-            mutant = code[:match.start()] + code[match.end():]
+        # === EASY: Remove variable.startswith() check (with nested parens support) ===
+        startswith_var_pattern = r'if\s+not\s+\w+\.startswith\s*\(.+?\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for mutant, _, _ in remove_if_block_safely(code, startswith_var_pattern):
             mutants.append((mutant, "[Easy] Removed path startswith validation"))
 
-        # === MEDIUM: Replace pathlib / operator with f-string (variable form) ===
-        # Pattern: (base / filename) where base is a variable
-        pathlib_var_pattern = r'\((\w+)\s*/\s*(\w+)\)'
-        matches = list(re.finditer(pathlib_var_pattern, code))
+        # === MEDIUM: Replace pathlib / operator with f-string (with parens) ===
+        # C9 fix: Wrap in Path() so downstream .resolve() calls still work
+        # Pattern: (base / filename)
+        pathlib_paren_pattern = r'\((\w+)\s*/\s*(\w+)\)'
+        matches = list(re.finditer(pathlib_paren_pattern, code))
         for match in matches:
             base_var = match.group(1)
             file_var = match.group(2)
-            replacement = f'f"{{str({base_var})}}/{{str({file_var})}}"'
+            replacement = f'Path(f"{{str({base_var})}}/{{str({file_var})}}")'
             mutant = code[:match.start()] + replacement + code[match.end():]
-            mutants.append((mutant, f"[Medium] Replaced ({base_var} / {file_var}) with f-string"))
+            mutants.append((mutant, f"[Medium] Replaced ({base_var} / {file_var}) with f-string (no canonicalization)"))
+
+        # === MEDIUM: Replace pathlib / operator WITHOUT parens (FIX Bug B) ===
+        # Pattern: var1 / var2 (assignment context to avoid matching division)
+        # Match: file_path = base_dir / filename
+        pathlib_noparen_pattern = r'(\w+)\s*=\s*(\w+)\s*/\s*(\w+)(?!\s*[/\d])'  # Avoid division context
+        matches = list(re.finditer(pathlib_noparen_pattern, code))
+        for match in matches:
+            result_var = match.group(1)
+            base_var = match.group(2)
+            file_var = match.group(3)
+            # Check this looks like pathlib (not arithmetic)
+            if any(kw in code for kw in ['Path', 'pathlib', 'directory', 'folder', 'path']):
+                # C9 fix: Wrap in Path() so downstream .resolve() calls still work
+                replacement = f'{result_var} = Path(f"{{str({base_var})}}/{{str({file_var})}}")'
+                mutant = code[:match.start()] + replacement + code[match.end():]
+                mutants.append((mutant, f"[Medium] Replaced {base_var} / {file_var} with f-string (no canonicalization)"))
 
         # === MEDIUM: Replace Path(...) / operator ===
+        # C9 fix: Wrap in Path() so downstream .resolve() calls still work
         pathlib_pattern = r'(Path\([^)]+\))\s*/\s*(\w+)'
         matches = list(re.finditer(pathlib_pattern, code))
         for match in matches:
             path_obj = match.group(1)
             filename = match.group(2)
-            replacement = f'f"{{str({path_obj})}}/{{str({filename})}}"'
+            replacement = f'Path(f"{{str({path_obj})}}/{{str({filename})}}")'
             mutant = code[:match.start()] + replacement + code[match.end():]
-            mutants.append((mutant, "[Medium] Replaced Path / operator with f-string"))
+            mutants.append((mutant, "[Medium] Replaced Path / operator with f-string (no canonicalization)"))
 
-        # === MEDIUM: Remove normpath/realpath/abspath ===
+        # === MEDIUM: Remove normpath/realpath/abspath (handle nested parens) ===
         for func in ['normpath', 'realpath', 'abspath']:
-            pattern = rf'os\.path\.{func}\s*\(\s*([^)]+)\s*\)'
+            # FIX Bug A: Use balanced approach for nested parens
+            pattern = rf'os\.path\.{func}\s*\((.+?)\)(?=\s*[,):\]\n])'
             matches = list(re.finditer(pattern, code))
             for match in matches:
                 inner = match.group(1)
                 mutant = code[:match.start()] + inner + code[match.end():]
                 mutants.append((mutant, f"[Medium] Removed os.path.{func}"))
+                # Identity variant: realpath(x) → str(x)
+                if func == 'realpath':
+                    mutant2 = code[:match.start()] + f'str({inner})' + code[match.end():]
+                    mutants.append((mutant2, f"[Medium] Replaced os.path.realpath with str() (identity)"))
 
         # === HARD: Replace os.path.join with string concatenation ===
         join_pattern = r'os\.path\.join\s*\(\s*([^,]+),\s*([^)]+)\)'
@@ -1117,12 +1639,32 @@ class PATHCONCAT(SecurityMutationOperator):
             mutants.append((mutant, "[Hard] Replaced os.path.join with string concatenation"))
 
         # === HARD: Remove entire path validation block ===
-        # Pattern: if not str(target).startswith(str(base)):\n    raise ...
+        # Uses helper function to filter out non-compiling results
         full_block_pattern = r'if\s+not\s+[^:]+:\s*\n\s*(raise\s+ValueError\([^)]*(?:traversal|path|invalid)[^)]*\)|return\s+None)\n?'
-        matches = list(re.finditer(full_block_pattern, code, re.IGNORECASE))
+        for mutant, _, _ in remove_if_block_safely(code, full_block_pattern, re.IGNORECASE):
+            mutants.append((mutant, "[Hard] Removed path validation block"))
+
+        # === HARD: Remove relative_to validation block (FIX Bug C) ===
+        # SecCodePLT pattern: try: path.resolve().relative_to(base.resolve()) except ValueError: raise/return
+        relative_to_try_pattern = r'try:\s*\n\s*[^\n]*\.relative_to\([^\n]+\)\s*\n\s*except\s+ValueError[^:]*:\s*\n\s*(raise|return)[^\n]*\n'
+        matches = list(re.finditer(relative_to_try_pattern, code))
         for match in matches:
             mutant = code[:match.start()] + code[match.end():]
-            mutants.append((mutant, "[Hard] Removed path validation block"))
+            mutants.append((mutant, "[Hard] Removed relative_to path validation"))
+
+        # === HARD: Remove .relative_to() call inline ===
+        relative_to_inline = r'\.relative_to\([^)]+\)'
+        if re.search(relative_to_inline, code):
+            mutant = re.sub(relative_to_inline, '', code)
+            mutants.append((mutant, "[Hard] Removed .relative_to() call"))
+
+        # === Pass-variant mutants (dead path validation) ===
+        for mutant, _, _ in replace_if_body_with_pass(code, startswith_pattern):
+            mutants.append((mutant, "[Easy] Dead path prefix check (pass instead of raise)"))
+        for mutant, _, _ in replace_if_body_with_pass(code, startswith_var_pattern):
+            mutants.append((mutant, "[Easy] Dead path startswith check (pass instead of raise)"))
+        for mutant, _, _ in replace_if_body_with_pass(code, full_block_pattern, re.IGNORECASE):
+            mutants.append((mutant, "[Hard] Dead path validation (pass instead of raise)"))
 
         return mutants
 
@@ -1146,7 +1688,23 @@ class CMDINJECT(SecurityMutationOperator):
         )
 
     def applies_to(self, code: str) -> bool:
-        return any(x in code for x in ['subprocess', 'os.system', 'os.popen', 'Popen', 'check_output'])
+        # Basic subprocess/os patterns
+        if any(x in code for x in ['subprocess', 'os.system', 'os.popen', 'Popen', 'check_output']):
+            return True
+        # EXPANDED: More command execution patterns
+        if 'shlex' in code:  # shlex.split, shlex.quote
+            return True
+        if 'shell=' in code:  # Any shell= parameter
+            return True
+        if re.search(r'\brun\s*\(', code) and 'import subprocess' in code:
+            return True
+        # Commands module (deprecated but still used)
+        if 'commands.' in code or 'getoutput' in code:
+            return True
+        # asyncio subprocess
+        if 'asyncio.create_subprocess' in code:
+            return True
+        return False
 
     def mutate(self, code: str) -> List[Tuple[str, str]]:
         mutants = []
@@ -1174,44 +1732,53 @@ class CMDINJECT(SecurityMutationOperator):
                 mutants.append((mutant, "[Variant 2] Added shell=True to subprocess call"))
 
         # Convert list args to string with shell=True (f-string variant)
+        # Use AST to safely parse list elements instead of naive comma splitting
         list_pattern = r'subprocess\.(run|call|Popen|check_output)\s*\(\s*\[([^\]]+)\]'
         matches = list(re.finditer(list_pattern, code))
 
         for match in matches:
             func = match.group(1)
-            args = match.group(2)
-            # Convert list to f-string, preserving variables
-            parts = []
-            vars_used = []
-            for a in args.split(','):
-                a = a.strip()
-                if a.startswith('"') or a.startswith("'"):
-                    # String literal - strip quotes
-                    parts.append(a.strip('"\''))
-                else:
-                    # Variable - use f-string interpolation
-                    parts.append('{' + a + '}')
-                    vars_used.append(a)
-            cmd_string = ' '.join(parts)
+            args_str = match.group(2)
+            # Use AST to parse the list elements safely
+            try:
+                parsed_list = ast.parse(f'[{args_str}]', mode='eval')
+                parts = []
+                has_variable = False
+                for elt in parsed_list.body.elts:
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                        parts.append(elt.value)
+                    else:
+                        # Non-literal (variable, call, etc.) - use f-string interpolation
+                        src = ast.get_source_segment(f'[{args_str}]', elt)
+                        if src is None:
+                            src = args_str  # fallback
+                        parts.append('{' + src + '}')
+                        has_variable = True
+                if not has_variable:
+                    continue  # No variables to inject through
+                cmd_string = ' '.join(parts)
+            except (SyntaxError, ValueError):
+                continue  # Skip if we can't parse the list
 
             # Variant 3: f-string with shell=True
             replacement = f'subprocess.{func}(f"{cmd_string}", shell=True'
             mutant = code[:match.start()] + replacement + code[match.end():]
-            mutants.append((mutant, "[Variant 3] Converted to f-string shell command"))
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "[Variant 3] Converted to f-string shell command"))
+            except SyntaxError:
+                pass
 
             # Variant 4: Replace with os.system
             os_cmd = f'os.system(f"{cmd_string}")'
             mutant2 = code[:match.start()] + os_cmd + code[match.end():]
             if 'import os' not in mutant2 and 'from os' not in mutant2:
                 mutant2 = 'import os\n' + mutant2
-            mutants.append((mutant2, "[Variant 4] Replaced subprocess with os.system"))
-
-            # Variant 5: Replace with os.popen
-            os_popen_cmd = f'os.popen(f"{cmd_string}")'
-            mutant3 = code[:match.start()] + os_popen_cmd + code[match.end():]
-            if 'import os' not in mutant3 and 'from os' not in mutant3:
-                mutant3 = 'import os\n' + mutant3
-            mutants.append((mutant3, "[Variant 5] Replaced subprocess with os.popen"))
+            try:
+                ast.parse(mutant2)
+                mutants.append((mutant2, "[Variant 4] Replaced subprocess with os.system"))
+            except SyntaxError:
+                pass
 
         # Remove shlex.quote
         shlex_pattern = r'shlex\.quote\s*\(\s*([^)]+)\s*\)'
@@ -1238,20 +1805,45 @@ class CMDINJECT(SecurityMutationOperator):
             mutant = code[:match.start()] + f'os.system({arg} + "; id")' + code[match.end():]
             mutants.append((mutant, "[Variant 8] Injected command via os.system"))
 
-        # NEW: Replace safe subprocess patterns with dangerous eval-based patterns
-        # Pattern: subprocess.run(["cmd", arg]) → eval("__import__('os').system('cmd ' + arg)")
-        safe_subprocess = r'subprocess\.(run|call)\s*\(\s*\[([^\]]+)\][^)]*\)'
-        for match in re.finditer(safe_subprocess, code):
-            args = match.group(2)
-            parts = [a.strip().strip('"\'') for a in args.split(',')]
-            if len(parts) >= 2:
-                cmd = parts[0]
-                var = parts[1] if not parts[1].startswith('"') else parts[1]
-                # Only if there's a variable involved
-                if not var.startswith('"') and not var.startswith("'"):
-                    eval_cmd = f"eval(f\"__import__('os').system('{cmd} ' + {var})\")"
-                    mutant = code[:match.start()] + eval_cmd + code[match.end():]
-                    mutants.append((mutant, "[Variant 9] Replaced subprocess with eval-based injection"))
+        # EXPANDED: Handle shlex.split patterns (common in secure transformations)
+        # Pattern: subprocess.run(shlex.split(cmd), shell=False)
+        # → subprocess.run(cmd, shell=True)
+        shlex_split_pattern = r'subprocess\.(run|call|Popen|check_output)\s*\(\s*shlex\.split\s*\(\s*([^)]+)\s*\)'
+        for match in re.finditer(shlex_split_pattern, code):
+            func = match.group(1)
+            cmd_arg = match.group(2).strip()
+            # Replace shlex.split(x) with just x and add shell=True
+            mutant = code[:match.start()] + f'subprocess.{func}({cmd_arg}, shell=True' + code[match.end():]
+            mutants.append((mutant, "[Expanded] shlex.split to shell=True"))
+
+            # Also try os.system variant
+            mutant2 = code[:match.start()] + f'os.system({cmd_arg})' + code[match.end():]
+            if 'import os' not in mutant2:
+                mutant2 = 'import os\n' + mutant2
+            mutants.append((mutant2, "[Expanded] shlex.split to os.system"))
+
+        # EXPANDED: Handle check=True removal (allows command failures to be silently ignored)
+        if 'check=True' in code:
+            mutant = code.replace('check=True', 'check=False')
+            mutants.append((mutant, "[Expanded] Disabled check=True safety"))
+
+        # NOTE: capture_output removal was removed — it's a functional change, not a security vulnerability
+
+        # EXPANDED: Handle asyncio.create_subprocess_shell patterns
+        asyncio_pattern = r'asyncio\.create_subprocess_exec\s*\(\s*([^)]+)\)'
+        for match in re.finditer(asyncio_pattern, code):
+            args = match.group(1)
+            # Convert to shell version
+            mutant = code[:match.start()] + f'asyncio.create_subprocess_shell({args})' + code[match.end():]
+            mutants.append((mutant, "[Expanded] asyncio exec to shell"))
+
+        # EXPANDED: Handle commands.getoutput (deprecated but seen in old code)
+        getoutput_pattern = r'subprocess\.getoutput\s*\(\s*([^)]+)\s*\)'
+        for match in re.finditer(getoutput_pattern, code):
+            cmd = match.group(1)
+            # getoutput already runs in shell, but we can make it worse
+            mutant = code[:match.start()] + f'os.popen({cmd}).read()' + code[match.end():]
+            mutants.append((mutant, "[Expanded] getoutput to os.popen"))
 
         return mutants
 
@@ -1484,15 +2076,28 @@ class SSRF(SecurityMutationOperator):
             return True
         if 'requests.' in code or 'urllib' in code or 'http.client' in code:
             return True
+        # URL construction with regex validation (CWEval pattern)
+        if 're.match' in code and ('url' in code.lower() or 'domain' in code.lower()):
+            return True
         return False
 
     def mutate(self, code: str) -> List[Tuple[str, str]]:
         mutants = []
 
+        # === NEW: Remove re.match validation for URL/domain construction ===
+        # Pattern: if not re.match(r'^[a-zA-Z0-9.-]+$', subdomain_prefix): return fallback
+        rematch_url = r'[ \t]*if\s+not\s+re\.match\s*\([^)]+,\s*\w+\s*\)\s*:\s*\n\s*(return|raise)[^\n]*\n'
+        for match in re.finditer(rematch_url, code):
+            mutant = code[:match.start()] + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "[Easy] Removed regex validation for URL/domain input"))
+            except SyntaxError:
+                pass
+
         # === EASY: Remove 'hostname in BLOCKED_HOSTS' check ===
-        # Pattern: if parsed.hostname in BLOCKED_HOSTS or ...
-        # Include leading whitespace to avoid indentation issues
-        blocked_hosts_pattern = r'[ \t]*if\s+[\w.]+\.hostname\s+in\s+\w+[^:]*:\s*\n\s*(raise|return)[^\n]*\n'
+        # Matches both variable names (BLOCKED_HOSTS) and list literals (['localhost', ...])
+        blocked_hosts_pattern = r'[ \t]*if\s+[\w.]+\.hostname\s+in\s+(?:\w+|\[[^\]]*\])[^:]*:\s*\n\s*(raise|return)[^\n]*\n'
         matches = list(re.finditer(blocked_hosts_pattern, code))
         for match in matches:
             mutant = code[:match.start()] + code[match.end():]
@@ -1520,12 +2125,17 @@ class SSRF(SecurityMutationOperator):
             mutant = code[:match.start()] + code[match.end():]
             mutants.append((mutant, "[Medium] Removed urlparse host validation"))
 
-        # === MEDIUM: Remove 'not in allowed_hosts' check ===
-        allowed_pattern = r'[ \t]*if\s+[\w.]+\s+not\s+in\s+(allowed_hosts|ALLOWED_HOSTS|whitelist)[^\n]*:\s*\n\s*(raise|return)[^\n]*\n'
-        matches = list(re.finditer(allowed_pattern, code))
+        # === MEDIUM: Remove 'not in allowed_hosts/ALLOWED_DOMAINS' check ===
+        # Matches: allowed_hosts, ALLOWED_HOSTS, whitelist, ALLOWED_DOMAINS, SAFE_*_DOMAINS, etc.
+        allowed_pattern = r'[ \t]*if\s+[\w.]+\s+not\s+in\s+\w*(?:allowed|ALLOWED|whitelist|WHITELIST|safe|SAFE)\w*[^\n]*:\s*\n\s*(raise|return)[^\n]*\n'
+        matches = list(re.finditer(allowed_pattern, code, re.IGNORECASE))
         for match in matches:
             mutant = code[:match.start()] + code[match.end():]
-            mutants.append((mutant, "[Medium] Removed allowed hosts validation"))
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "[Medium] Removed allowed hosts/domains validation"))
+            except SyntaxError:
+                pass
 
         # === HARD: Remove is_safe_url check ===
         safe_url_pattern = r'[ \t]*if\s+not\s+is_safe_url\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
@@ -1550,6 +2160,74 @@ class SSRF(SecurityMutationOperator):
         for match in matches:
             mutant = code[:match.start()] + code[match.end():]
             mutants.append((mutant, "[Hard] Removed multi-condition URL validation"))
+
+        # === NEW: Remove parsed_url.hostname not in ALLOWED_VAR check (SecCodePLT pattern) ===
+        # Pattern: if parsed_url.hostname not in ALLOWED_DOMAINS: raise ValueError(...)
+        hostname_allowlist = r'[ \t]*if\s+[\w.]+\.hostname\s+not\s+in\s+\w+\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for match in re.finditer(hostname_allowlist, code):
+            mutant = code[:match.start()] + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "[Easy] Removed hostname allowlist validation"))
+            except SyntaxError:
+                pass
+
+        # === GENERAL: Remove scheme validation with list literal ===
+        # Pattern: if parsed.scheme not in ['http', 'https']:
+        scheme_list_check = r'[ \t]*if\s+[\w.]+\.scheme\s+not\s+in\s+\[[^\]]*\]\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for match in re.finditer(scheme_list_check, code):
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "[Medium] Removed URL scheme validation"))
+
+        # === GENERAL: Remove 'hostname in [list]' check ===
+        # Pattern: if parsed.hostname in ['localhost', '127.0.0.1']:
+        hostname_list_check = r'[ \t]*if\s+[\w.]+\s+in\s+\[[^\]]*\]\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for match in re.finditer(hostname_list_check, code):
+            matched = match.group()
+            if any(kw in matched.lower() for kw in ['host', 'local', '127', '10.', '192.', 'internal', 'private']):
+                mutant = code[:match.start()] + code[match.end():]
+                mutants.append((mutant, "[Easy] Removed hostname list check"))
+
+        # === NEW: Empty blocklist variant ===
+        # Replace blocklist sets/lists with empty set
+        blocklist_def = re.search(
+            r'((?:BLOCKED|DANGEROUS|INTERNAL|PRIVATE)_(?:HOSTS|IPS|DOMAINS|NETWORKS))\s*=\s*(?:\{[^}]+\}|\[[^\]]+\])',
+            code, re.IGNORECASE
+        )
+        if blocklist_def:
+            var_name = blocklist_def.group(1)
+            mutant = code[:blocklist_def.start()] + f'{var_name} = set()' + code[blocklist_def.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "[Easy] Emptied blocklist (all hosts allowed)"))
+            except SyntaxError:
+                pass
+
+        # === NEW: Extended validation bypass function names ===
+        for func_name in ['is_safe_url', 'check_url', 'sanitize_url', 'validate_url_safety']:
+            bypass_pattern = rf'[ \t]*if\s+not\s+{func_name}\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+            for match in re.finditer(bypass_pattern, code, re.IGNORECASE):
+                mutant = code[:match.start()] + code[match.end():]
+                try:
+                    ast.parse(mutant)
+                    mutants.append((mutant, f"[Hard] Removed {func_name} validation"))
+                except SyntaxError:
+                    pass
+
+        # === Pass-variant mutants (dead SSRF validation) ===
+        ssrf_pass_patterns = [
+            (rematch_url, 0, "[Easy] Dead regex URL validation"),
+            (blocked_hosts_pattern, 0, "[Easy] Dead hostname blocklist"),
+            (url_check_pattern, 0, "[Medium] Dead URL prefix/suffix validation"),
+            (urlparse_check, 0, "[Medium] Dead urlparse host validation"),
+            (allowed_pattern, re.IGNORECASE, "[Medium] Dead allowed hosts validation"),
+            (safe_url_pattern, re.IGNORECASE, "[Hard] Dead is_safe_url validation"),
+            (hostname_allowlist, 0, "[Easy] Dead hostname allowlist validation"),
+            (scheme_list_check, 0, "[Medium] Dead URL scheme validation"),
+        ]
+        for pat, flg, desc in ssrf_pass_patterns:
+            for mutant, _, _ in replace_if_body_with_pass(code, pat, flg):
+                mutants.append((mutant, desc + " (pass instead of raise)"))
 
         return mutants
 
@@ -1585,41 +2263,64 @@ class IDOR(SecurityMutationOperator):
     def mutate(self, code: str) -> List[Tuple[str, str]]:
         mutants = []
 
-        # Remove owner_id check
+        # Remove owner_id check (using helper to filter non-compiling mutants)
         owner_check_pattern = r'if\s+[\w.]+\.owner_id\s*(!=|==)\s*[\w.]+:\s*\n\s*(raise|return)[^\n]*\n'
-        matches = list(re.finditer(owner_check_pattern, code))
-        for match in matches:
-            mutant = code[:match.start()] + code[match.end():]
+        for mutant, _, _ in remove_if_block_safely(code, owner_check_pattern):
             mutants.append((mutant, "Removed owner_id authorization check"))
 
-        # Remove user_id comparison
+        # Remove user_id comparison (with object attribute)
         user_check_pattern = r'if\s+[\w.]+\s*(!=|==)\s*(current_user|request\.user|session\[.user.\])[\w.]*:\s*\n\s*(raise|return)[^\n]*\n'
-        matches = list(re.finditer(user_check_pattern, code))
-        for match in matches:
-            mutant = code[:match.start()] + code[match.end():]
+        for mutant, _, _ in remove_if_block_safely(code, user_check_pattern):
             mutants.append((mutant, "Removed user authorization check"))
+
+        # Remove simple user_id variable comparison (e.g., if user_id != current_user_id:)
+        simple_user_check = r'if\s+(\w*user\w*)\s*(!=|==)\s*(\w*user\w*)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for mutant, _, _ in remove_if_block_safely(code, simple_user_check, re.IGNORECASE):
+            mutants.append((mutant, "Removed user ID comparison check"))
 
         # Remove has_permission check
         perm_pattern = r'if\s+not\s+[\w.]+\.has_permission\s*\([^)]*\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
-        matches = list(re.finditer(perm_pattern, code))
-        for match in matches:
-            mutant = code[:match.start()] + code[match.end():]
+        for mutant, _, _ in remove_if_block_safely(code, perm_pattern):
             mutants.append((mutant, "Removed has_permission check"))
 
         # Remove can_access check
         access_pattern = r'if\s+not\s+(can_access|check_access|is_authorized)\s*\([^)]*\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
-        matches = list(re.finditer(access_pattern, code, re.IGNORECASE))
-        for match in matches:
-            mutant = code[:match.start()] + code[match.end():]
+        for mutant, _, _ in remove_if_block_safely(code, access_pattern, re.IGNORECASE):
             mutants.append((mutant, "Removed access authorization check"))
 
-        # Replace authorization function with True
+        # Replace authorization function with True (always compiles)
         for pattern in ['has_permission', 'can_access', 'is_owner', 'check_ownership']:
             func_pattern = rf'{pattern}\s*\([^)]*\)'
             matches = list(re.finditer(func_pattern, code, re.IGNORECASE))
             for match in matches:
                 mutant = code[:match.start()] + 'True' + code[match.end():]
                 mutants.append((mutant, f"Replaced {pattern}() with True"))
+
+        # Alternative: Replace comparison with True/False to bypass check
+        # Pattern: if user_id != current_user_id → if False
+        user_comparison = r'(\w*user\w*)\s*(!=|==)\s*(\w*user\w*)'
+        for match in re.finditer(user_comparison, code, re.IGNORECASE):
+            op = match.group(2)
+            # If != (should be equal), replace with False to bypass
+            replacement = 'False' if op == '!=' else 'True'
+            mutant = code[:match.start()] + replacement + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, f"Replaced user ID check with {replacement}"))
+            except SyntaxError:
+                pass
+
+        # === Pass-variant mutants (dead authorization checks) ===
+        for mutant, _, _ in replace_if_body_with_pass(code, owner_check_pattern):
+            mutants.append((mutant, "Dead owner_id check (pass instead of raise)"))
+        for mutant, _, _ in replace_if_body_with_pass(code, user_check_pattern):
+            mutants.append((mutant, "Dead user authorization check (pass instead of raise)"))
+        for mutant, _, _ in replace_if_body_with_pass(code, simple_user_check, re.IGNORECASE):
+            mutants.append((mutant, "Dead user ID comparison (pass instead of raise)"))
+        for mutant, _, _ in replace_if_body_with_pass(code, perm_pattern):
+            mutants.append((mutant, "Dead has_permission check (pass instead of raise)"))
+        for mutant, _, _ in replace_if_body_with_pass(code, access_pattern, re.IGNORECASE):
+            mutants.append((mutant, "Dead access authorization check (pass instead of raise)"))
 
         return mutants
 
@@ -1775,6 +2476,30 @@ class XXE(SecurityMutationOperator):
                 if mutant != code:
                     mutants.append((mutant, "Removed custom parser from ElementTree.parse"))
 
+        # === NEW: Remove resolve_entities=False entirely ===
+        # Parser default is True, so removing the param enables entity resolution
+        if 'resolve_entities=False' in code:
+            resolve_param = r',\s*resolve_entities\s*=\s*False'
+            mutant = re.sub(resolve_param, '', code)
+            if mutant != code:
+                try:
+                    ast.parse(mutant)
+                    mutants.append((mutant, "Removed resolve_entities=False (defaults to True)"))
+                except SyntaxError:
+                    pass
+
+        # === NEW: Remove parser= argument from parse/fromstring calls ===
+        # Broader pattern covering any parse/fromstring with parser kwarg
+        parser_kwarg = r'((?:\.parse|\.fromstring|\.iterparse)\s*\([^,]+),\s*parser\s*=\s*\w+'
+        if re.search(parser_kwarg, code):
+            mutant = re.sub(parser_kwarg, r'\1', code)
+            if mutant != code:
+                try:
+                    ast.parse(mutant)
+                    mutants.append((mutant, "Removed parser= argument (uses default unsafe parser)"))
+                except SyntaxError:
+                    pass
+
         return mutants
 
 
@@ -1837,14 +2562,28 @@ class SSTI(SecurityMutationOperator):
             mutant = code.replace('SandboxedEnvironment', 'Environment')
             mutants.append((mutant, "Replaced SandboxedEnvironment with Environment"))
 
-        # Use string formatting in template
-        format_pattern = r'\.render\s*\(\s*\w+\s*=\s*(\w+)\s*\)'
-        matches = list(re.finditer(format_pattern, code))
-        for match in matches:
-            var = match.group(1)
-            mutant = code[:match.start()] + f'.render({var}={var})' + code[match.end():]
-            if mutant != code:
-                mutants.append((mutant, "Modified template render call"))
+        # Disable autoescape via select_autoescape
+        if 'select_autoescape()' in code:
+            mutant = code.replace('select_autoescape()', 'False')
+            mutants.append((mutant, "Disabled autoescaping by replacing select_autoescape"))
+
+        # H9 fix: Removed duplicate autoescape and render_template blocks
+
+        # Replace env.from_string(ALLOWED_TEMPLATE) with Template(user_input)
+        # Pattern: env.from_string(CONSTANT[key]) or env.from_string(template_var)
+        from_string_pattern = r'(\w+)\.from_string\s*\([^)]+\)'
+        for match in re.finditer(from_string_pattern, code):
+            mutant = code[:match.start()] + 'Template(user_input)' + code[match.end():]
+            # Make sure Template is importable
+            if 'from jinja2 import' in mutant and 'Template' not in mutant.split('import')[1].split('\n')[0]:
+                mutant = mutant.replace('from jinja2 import', 'from jinja2 import Template,')
+            mutants.append((mutant, "Replaced safe env.from_string with Template(user_input)"))
+
+        # Remove template allowlist check
+        allowlist_pattern = r'if\s+\w+\s+not\s+in\s+(?:ALLOWED_TEMPLATES|PAGES|NOTIFICATIONS|templates)\s*:\s*\n\s*raise\s+ValueError[^\n]*\n'
+        for match in re.finditer(allowlist_pattern, code):
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "Removed template allowlist validation"))
 
         return mutants
 
@@ -1954,20 +2693,102 @@ class CSRF_REMOVE(SecurityMutationOperator):
             mutant = code[:match.start()] + code[match.end():]
             mutants.append((mutant, "Removed @csrf_protect decorator"))
 
-        # Add @csrf_exempt decorator
+        # Add @csrf_exempt decorator (only if function doesn't already have inline CSRF validation)
         func_pattern = r'(def\s+\w+\s*\([^)]*request[^)]*\)\s*:)'
         matches = list(re.finditer(func_pattern, code))
         for match in matches:
             if '@csrf_exempt' not in code[:match.start()]:
-                mutant = code[:match.start()] + '@csrf_exempt\n' + code[match.start():]
-                mutants.append((mutant, "Added @csrf_exempt decorator"))
+                # Check if this function has inline CSRF validation - if so, skip decorator mutation
+                func_body_start = match.end()
+                # Find end of function (next def or end of code)
+                next_def = code.find('\ndef ', func_body_start)
+                func_body = code[func_body_start:next_def] if next_def > 0 else code[func_body_start:]
+                if 'csrf' not in func_body.lower():
+                    mutant = code[:match.start()] + '@csrf_exempt\n' + code[match.start():]
+                    mutants.append((mutant, "Added @csrf_exempt decorator"))
 
-        # Remove CSRF token validation
-        csrf_check_pattern = r'if\s+not\s+[\w.]*csrf[\w.]*\s*[:(][^:]*:\s*\n\s*(raise|return)[^\n]*\n'
-        matches = list(re.finditer(csrf_check_pattern, code, re.IGNORECASE))
-        for match in matches:
+        # IMPROVED: Remove CSRF token validation - handle compound conditions
+        # Pattern 1: Simple check - if not csrf_token:
+        simple_csrf_pattern = r'if\s+not\s+[\w.]*csrf[\w.]*\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for match in re.finditer(simple_csrf_pattern, code, re.IGNORECASE):
             mutant = code[:match.start()] + code[match.end():]
-            mutants.append((mutant, "Removed CSRF token validation"))
+            mutants.append((mutant, "Removed simple CSRF check"))
+
+        # Pattern 2: Compound check - if not csrf_token or not compare_digest(...):
+        compound_csrf_pattern = r'if\s+not\s+[\w.]*csrf[\w.]*\s+or\s+not\s+[^:]+:\s*\n\s*(raise|return)[^\n]*\n'
+        for match in re.finditer(compound_csrf_pattern, code, re.IGNORECASE):
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "Removed compound CSRF validation"))
+
+        # Pattern 3: Compound with secrets.compare_digest
+        compare_digest_pattern = r'if\s+not\s+[\w.]*csrf[\w.]*\s+or\s+not\s+[\w.]*compare_digest\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for match in re.finditer(compare_digest_pattern, code, re.IGNORECASE):
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "Removed CSRF compare_digest validation"))
+
+        # Pattern 4: Multi-line compound condition
+        multiline_csrf_pattern = r'if\s*\(\s*not\s+[\w.]*csrf[\w.]*\s+or[^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for match in re.finditer(multiline_csrf_pattern, code, re.IGNORECASE):
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "Removed multi-line CSRF validation"))
+
+        # NEW: Remove entire CSRF validation block (token extraction through validation)
+        # Matches: csrf_token = request.form.get('csrf_token')
+        #          expected = session.get('csrf_token')
+        #          if not csrf_token or not secrets.compare_digest(...):
+        #              raise ValueError(...)
+        csrf_block_pattern = r'(\s*)[\w.]*csrf[\w.]*\s*=\s*[\w.]+\.(?:get|form\.get|cookies\.get)\s*\([^)]*csrf[^)]*\)[^\n]*\n(?:.*?csrf.*?\n)*?\s*if\s+not\s+[\w.]*csrf[^:]+:\s*\n\s*(?:raise|return)[^\n]*\n'
+        for match in re.finditer(csrf_block_pattern, code, re.IGNORECASE | re.DOTALL):
+            indent = match.group(1)
+            mutant = code[:match.start()] + f'{indent}pass  # CSRF validation removed\n' + code[match.end():]
+            mutants.append((mutant, "Removed entire CSRF validation block"))
+
+        # NEW: Remove CSRF validation block including if-block body
+        # Handles patterns like:
+        #     csrf_token = request.get("X-CSRF-Token")
+        #     if csrf_token != expected:
+        #         return False
+        lines = code.split('\n')
+
+        # Find lines with CSRF checks and their associated blocks
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            # Check for CSRF if-statement
+            if re.search(r'if\s+.*csrf', line, re.IGNORECASE) and ':' in line:
+                # Found an if-csrf block - find its extent
+                if_indent = len(line) - len(line.lstrip())
+                block_start = i
+                block_end = i + 1
+
+                # Find the end of the if-block (next line with same or less indent)
+                while block_end < len(lines):
+                    next_line = lines[block_end]
+                    if next_line.strip():  # Non-empty line
+                        next_indent = len(next_line) - len(next_line.lstrip())
+                        if next_indent <= if_indent:
+                            break
+                    block_end += 1
+
+                # Also check for preceding csrf_token = ... line
+                if block_start > 0:
+                    prev_line = lines[block_start - 1]
+                    if re.search(r'csrf.*=', prev_line, re.IGNORECASE):
+                        block_start -= 1
+
+                # Create mutant with block replaced by pass
+                new_lines = lines[:block_start]
+                new_lines.append(' ' * if_indent + 'pass  # CSRF validation removed')
+                new_lines.extend(lines[block_end:])
+                mutant = '\n'.join(new_lines)
+
+                if mutant != code:
+                    try:
+                        compile(mutant, '<string>', 'exec')
+                        mutants.append((mutant, "Removed CSRF validation block"))
+                    except SyntaxError:
+                        pass  # Skip invalid mutants
+            i += 1
 
         # Remove csrf_token from form
         form_pattern = r'<input[^>]*csrf[^>]*>\s*\n?'
@@ -1994,6 +2815,15 @@ class CSRF_REMOVE(SecurityMutationOperator):
         if 'CSRF_COOKIE_SECURE = True' in code:
             mutant = code.replace('CSRF_COOKIE_SECURE = True', 'CSRF_COOKIE_SECURE = False')
             mutants.append((mutant, "Set CSRF_COOKIE_SECURE to False"))
+
+        # NEW: Replace compare_digest with == (timing attack)
+        if 'compare_digest' in code:
+            # secrets.compare_digest(a, b) → a == b
+            compare_pattern = r'[\w.]*compare_digest\s*\(\s*([^,]+)\s*,\s*([^)]+)\s*\)'
+            for match in re.finditer(compare_pattern, code):
+                a, b = match.group(1).strip(), match.group(2).strip()
+                mutant = code[:match.start()] + f'{a} == {b}' + code[match.end():]
+                mutants.append((mutant, "Replaced compare_digest with == (timing attack)"))
 
         return mutants
 
@@ -2040,6 +2870,9 @@ class WEAKRANDOM(SecurityMutationOperator):
             if 'import random' not in mutant:
                 mutant = 'import random\n' + mutant
             mutants.append((mutant, f"Replaced secrets.token_bytes with weak random.randbytes"))
+            # Predictable constant variant
+            mutant2 = code[:match.start()] + f"b'\\x00' * {n}" + code[match.end():]
+            mutants.append((mutant2, f"Replaced secrets.token_bytes with predictable constant"))
 
         # secrets.token_hex(n) → '%0{n*2}x' % random.getrandbits(n*8)
         pattern2 = r'secrets\.token_hex\((\d+)\)'
@@ -2053,6 +2886,9 @@ class WEAKRANDOM(SecurityMutationOperator):
             if 'import random' not in mutant:
                 mutant = 'import random\n' + mutant
             mutants.append((mutant, f"Replaced secrets.token_hex with weak random.getrandbits"))
+            # Predictable constant variant
+            mutant2 = code[:match.start()] + f"'a' * {hex_width}" + code[match.end():]
+            mutants.append((mutant2, f"Replaced secrets.token_hex with predictable constant"))
 
         # secrets.token_urlsafe(n) → base64.urlsafe_b64encode(random.randbytes(n)).decode()
         pattern3 = r'secrets\.token_urlsafe\((\d+)\)'
@@ -2066,6 +2902,9 @@ class WEAKRANDOM(SecurityMutationOperator):
             if 'import base64' not in mutant:
                 mutant = 'import base64\n' + mutant
             mutants.append((mutant, f"Replaced secrets.token_urlsafe with weak random"))
+            # Predictable constant variant
+            mutant2 = code[:match.start()] + f"'A' * {n}" + code[match.end():]
+            mutants.append((mutant2, f"Replaced secrets.token_urlsafe with predictable constant"))
 
         # secrets.choice(seq) → random.choice(seq)
         pattern4 = r'secrets\.choice\('
@@ -2095,6 +2934,9 @@ class WEAKRANDOM(SecurityMutationOperator):
             if 'import random' not in mutant:
                 mutant = 'import random\n' + mutant
             mutants.append((mutant, f"Replaced os.urandom with weak random.randbytes"))
+            # Predictable constant variant
+            mutant2 = code[:match.start()] + f"b'\\x00' * {n}" + code[match.end():]
+            mutants.append((mutant2, f"Replaced os.urandom with predictable constant"))
 
         # random.SystemRandom() → random.Random()
         if 'SystemRandom' in code:
@@ -2124,8 +2966,12 @@ class EVALINJECT(SecurityMutationOperator):
         )
 
     def applies_to(self, code: str) -> bool:
-        safe_patterns = ['ast.literal_eval', 'json.loads', 'safe_eval', 'literal_eval']
-        return any(p in code for p in safe_patterns)
+        safe_patterns = ['ast.literal_eval', 'json.loads', 'safe_eval', 'literal_eval', 'ast.parse']
+        # Also match restricted eval with builtins restriction, regex validation, or char allowlist
+        has_restricted_eval = ('eval(' in code and ('__builtins__' in code or 're.match' in code or 're.fullmatch' in code))
+        # Char allowlist before eval: allowed_chars = set(...); if not set(x).issubset(...)
+        has_char_allowlist = ('eval(' in code and ('issubset' in code or 'allowed_chars' in code or 'allowed' in code.lower()))
+        return any(p in code for p in safe_patterns) or has_restricted_eval or has_char_allowlist
 
     def mutate(self, code: str) -> List[Tuple[str, str]]:
         mutants = []
@@ -2145,6 +2991,154 @@ class EVALINJECT(SecurityMutationOperator):
             mutant = code.replace('json.loads', 'eval')
             mutants.append((mutant, "json.loads → eval (code injection)"))
 
+        # ast.parse with eval mode → eval() directly
+        # Pattern: tree = ast.parse(expr, mode='eval') ... → return eval(expr)
+        if 'ast.parse' in code:
+            # Replace the safe AST-based evaluation with direct eval
+            # Find the function and replace ast.parse with eval
+            ast_parse_pattern = r'ast\.parse\s*\(\s*(\w+).*?\)'
+            matches = list(re.finditer(ast_parse_pattern, code))
+            for match in matches:
+                var_name = match.group(1)
+                # Replace the entire function body that uses ast.parse with eval
+                mutant = re.sub(
+                    r'(def\s+\w+\s*\([^)]*\):\s*(?:"""[^"]*"""|\'\'\'[^\']*\'\'\')?\s*\n).*?(?=\ndef|\Z)',
+                    lambda m: m.group(1) + f'    return eval({var_name})\n',
+                    code,
+                    flags=re.DOTALL
+                )
+                if mutant != code:
+                    try:
+                        ast.parse(mutant)
+                        mutants.append((mutant, "ast.parse → eval (code injection)"))
+                    except SyntaxError:
+                        pass
+
+        # NEW: Restricted eval with builtins → unrestricted eval
+        # Pattern: eval(formula, {"__builtins__": {}}, {}) → eval(formula)
+        # Also handles: eval(x, {"__builtins__": {}})
+        builtins_patterns = [
+            # eval(var, {"__builtins__": {}}, {})
+            r'eval\s*\(\s*(\w+)\s*,\s*\{"__builtins__":\s*\{\}\}\s*,\s*\{\}\s*\)',
+            # eval(var, {"__builtins__": {}})
+            r'eval\s*\(\s*(\w+)\s*,\s*\{"__builtins__":\s*\{\}\}\s*\)',
+            # eval(var, {}, {"__builtins__": {}})
+            r'eval\s*\(\s*(\w+)\s*,\s*\{\}\s*,\s*\{"__builtins__":\s*\{\}\}\s*\)',
+        ]
+        for pattern in builtins_patterns:
+            for match in re.finditer(pattern, code):
+                var_name = match.group(1)
+                mutant = code[:match.start()] + f'eval({var_name})' + code[match.end():]
+                try:
+                    ast.parse(mutant)
+                    mutants.append((mutant, "Removed builtins restriction from eval"))
+                except SyntaxError:
+                    pass
+
+        # === NEW: Remove AST node-type whitelist validation (SecCodePLT pattern) ===
+        # Pattern:
+        #   parsed = ast.parse(code_string, mode="eval")
+        #   allowed_nodes = (ast.Expression, ast.BinOp, ...)
+        #   if any(not isinstance(node, ...) for node in ast.walk(parsed)):
+        #       result = 'Blocked!'
+        #   else:
+        #       compiled = compile(parsed, ...)
+        #       result = eval(compiled)
+        # Mutation: Replace entire if/else with direct eval(code_string)
+        if 'ast.walk' in code and 'ast.parse' in code:
+            # Find the input variable from ast.parse call
+            parse_match = re.search(r'ast\.parse\s*\(\s*(\w+)', code)
+            if parse_match:
+                input_var = parse_match.group(1)
+                # Match the entire if-any-isinstance/else block (use .*? with DOTALL for nested parens)
+                ast_whitelist_pattern = re.compile(
+                    r'(?P<indent>[ \t]*)if\s+any\(.*?ast\.walk.*?\)\s*:\s*\n'
+                    r'(?:(?P=indent)[ \t]+[^\n]+\n)+'         # if-body (Blocked!)
+                    r'(?P=indent)else\s*:\s*\n'
+                    r'(?:(?P=indent)[ \t]+[^\n]+\n)+',        # else-body (compile+eval)
+                    re.DOTALL
+                )
+                match = ast_whitelist_pattern.search(code)
+                if match:
+                    indent = match.group('indent')
+                    replacement = f'{indent}result = eval({input_var})\n'
+                    mutant = code[:match.start()] + replacement + code[match.end():]
+                    try:
+                        ast.parse(mutant)
+                        mutants.append((mutant, "Removed AST whitelist validation (direct eval injection)"))
+                    except SyntaxError:
+                        pass
+
+            # Also remove the allowed_nodes_types definition and ast.parse lines
+            # to create a cleaner mutant
+            if parse_match:
+                input_var = parse_match.group(1)
+                mutant = code
+                # Remove allowed_nodes_types tuple definition
+                mutant = re.sub(
+                    r'[ \t]*\w+\s*=\s*\(\s*\n(?:\s*ast\.\w+,?\s*\n)+\s*\)\s*\n',
+                    '', mutant
+                )
+                # Remove ast.parse line
+                mutant = re.sub(
+                    r'[ \t]*\w+\s*=\s*ast\.parse\s*\([^)]+\)\s*\n',
+                    '', mutant
+                )
+                # Replace the if/else block with direct eval
+                ast_if_else = re.compile(
+                    r'(?P<indent>[ \t]*)if\s+any\(.*?ast\.walk.*?\)\s*:\s*\n'
+                    r'(?:(?P=indent)[ \t]+[^\n]+\n)+'
+                    r'(?P=indent)else\s*:\s*\n'
+                    r'(?:(?P=indent)[ \t]+[^\n]+\n)+',
+                    re.DOTALL
+                )
+                match2 = ast_if_else.search(mutant)
+                if match2:
+                    indent = match2.group('indent')
+                    replacement = f'{indent}result = eval({input_var})\n'
+                    mutant = mutant[:match2.start()] + replacement + mutant[match2.end():]
+                    try:
+                        ast.parse(mutant)
+                        mutants.append((mutant, "Removed AST parsing and whitelist (direct eval injection)"))
+                    except SyntaxError:
+                        pass
+
+        # NEW: Remove char-allowlist validation before eval
+        # Pattern: allowed_chars = set('0123456789+-*/()'); if not set(expr).issubset(allowed_chars): return ''
+        if 'issubset' in code and 'eval(' in code:
+            # Remove the if-not-issubset validation block
+            allowlist_if = r'[ \t]*if\s+not\s+set\s*\(\s*\w+\s*\)\.issubset\s*\([^)]+\)\s*:\s*\n\s*(return|raise)[^\n]*\n'
+            for m, _, _ in remove_if_block_safely(code, allowlist_if):
+                if 'eval(' in m:
+                    mutants.append((m, "Removed char allowlist validation before eval (code injection)"))
+
+        # NEW: Remove regex validation before eval
+        # Pattern: if not re.match(...): raise ... → remove validation
+        # Handle multi-line patterns by looking for the if block
+        regex_validation_patterns = [
+            # Standard if not re.match pattern
+            r'if\s+not\s+re\.match\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n',
+            r'if\s+not\s+re\.fullmatch\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n',
+            # M11 fix: Only match variable names suggesting regex/validation result
+            # (was r'if\s+not\s+\w+\s*:' which matched ANY null/empty check)
+            r'if\s+not\s+(?:match|valid|validated|result|check|pattern_match)\s*:\s*\n\s*(raise|return)[^\n]*\n',
+        ]
+        for pattern in regex_validation_patterns:
+            for m, _, _ in remove_if_block_safely(code, pattern):
+                if 'eval(' in m:
+                    mutants.append((m, "Removed regex validation before eval"))
+
+        # === Pass-variant mutants (dead eval validation) ===
+        if 'issubset' in code and 'eval(' in code:
+            allowlist_if = r'[ \t]*if\s+not\s+set\s*\(\s*\w+\s*\)\.issubset\s*\([^)]+\)\s*:\s*\n\s*(return|raise)[^\n]*\n'
+            for m, _, _ in replace_if_body_with_pass(code, allowlist_if):
+                if 'eval(' in m:
+                    mutants.append((m, "Dead char allowlist check (pass instead of raise)"))
+        for pattern in regex_validation_patterns:
+            for m, _, _ in replace_if_body_with_pass(code, pattern):
+                if 'eval(' in m:
+                    mutants.append((m, "Dead regex validation (pass instead of raise)"))
+
         return mutants
 
 
@@ -2163,24 +3157,57 @@ class LOGINJECT(SecurityMutationOperator):
         )
 
     def applies_to(self, code: str) -> bool:
-        log_patterns = ['logging.', 'logger.', 'log.info', 'log.error', 'log.warning', 'log.debug']
-        sanitize_patterns = ['replace(', 'strip(', 'encode(', 'escape(', 'sanitize']
-        return any(l in code for l in log_patterns) and any(s in code for s in sanitize_patterns)
+        log_patterns = ['logging.', 'logger.', 'log.info', 'log.error', 'log.warning', 'log.debug', 'log(', 'log_entry', 'log entry', 'Received:']
+        sanitize_patterns = ['replace(', 'strip(', 'encode(', 'escape(', 'sanitize', 're.sub(']
+        code_lower = code.lower()
+        return any(l.lower() in code_lower for l in log_patterns) and any(s in code for s in sanitize_patterns)
 
     def mutate(self, code: str) -> List[Tuple[str, str]]:
         mutants = []
 
-        # Remove .replace('\n', '') or .replace('\r', '') before logging
-        newline_sanitize = r'\.replace\s*\(\s*["\'][\\]?[nr]["\'],\s*["\']["\']s*\)'
+        # Remove .replace('\n', ' ') or .replace('\r', ' ') or .replace('\n', '')
+        # Matches: .replace('\n', ' '), .replace('\\n', ''), .replace("\r", " ")
+        newline_sanitize = r"\.replace\s*\(\s*['\"]\\\\?[nr]['\"],\s*['\"][^'\"]*['\"]\s*\)"
         if re.search(newline_sanitize, code):
             mutant = re.sub(newline_sanitize, '', code)
             mutants.append((mutant, "Removed newline sanitization from log input"))
+
+        # Remove re.sub(r'[\n\r\t]', ' ', ...) sanitization
+        resub_sanitize = r"re\.sub\s*\(\s*[r]?['\"][^'\"]*\\\\[nrt][^'\"]*['\"],\s*['\"][^'\"]*['\"],\s*\w+\s*\)"
+        for match in re.finditer(resub_sanitize, code):
+            # Replace the re.sub call with just the variable name
+            full_match = match.group()
+            # Extract the variable being sanitized (last argument)
+            var_match = re.search(r',\s*(\w+)\s*\)$', full_match)
+            if var_match:
+                var_name = var_match.group(1)
+                mutant = code.replace(full_match, var_name)
+                mutants.append((mutant, "Removed re.sub sanitization from log input"))
 
         # Remove .strip() before logging
         strip_pattern = r'\.strip\s*\(\s*\)'
         if re.search(strip_pattern, code) and 'log' in code.lower():
             mutant = re.sub(strip_pattern, '', code)
             mutants.append((mutant, "Removed strip() from log input"))
+
+        # === NEW: Remove .encode('unicode_escape') sanitization ===
+        unicode_escape = r"\.encode\s*\(\s*['\"]unicode_escape['\"]\s*\)"
+        if re.search(unicode_escape, code):
+            mutant = re.sub(unicode_escape, '', code)
+            mutants.append((mutant, "Removed unicode_escape encoding from log input"))
+
+        # === NEW: Bypass sanitization function calls ===
+        # Pattern: sanitize_log(x) → x, clean_log_input(x) → x
+        for func_name in ['sanitize_log', 'clean_log_input', 'sanitize_input', 'escape_log']:
+            sanitize_pattern = rf'{func_name}\s*\(\s*(\w+)\s*\)'
+            for match in re.finditer(sanitize_pattern, code):
+                var_name = match.group(1)
+                mutant = code[:match.start()] + var_name + code[match.end():]
+                try:
+                    ast.parse(mutant)
+                    mutants.append((mutant, f"Bypassed {func_name}() sanitization"))
+                except SyntaxError:
+                    pass
 
         return mutants
 
@@ -2201,7 +3228,7 @@ class OPENREDIRECT(SecurityMutationOperator):
         self.redirect_validators = [
             'is_safe_url', 'url_has_allowed_host', 'validate_redirect',
             'check_redirect', 'safe_redirect', 'allowed_redirect',
-            'ALLOWED_HOSTS', 'startswith', 'urlparse'
+            'ALLOWED_HOSTS', 'ALLOWED_DOMAINS', 'startswith', 'urlparse'
         ]
 
     def applies_to(self, code: str) -> bool:
@@ -2214,22 +3241,102 @@ class OPENREDIRECT(SecurityMutationOperator):
 
         # Remove is_safe_url check
         safe_url_pattern = r'if\s+not\s+is_safe_url\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
-        for match in re.finditer(safe_url_pattern, code):
-            mutant = code[:match.start()] + code[match.end():]
+        for mutant, _, _ in remove_if_block_safely(code, safe_url_pattern):
             mutants.append((mutant, "Removed is_safe_url redirect validation"))
 
         # Remove url_has_allowed_host check
         allowed_host_pattern = r'if\s+not\s+url_has_allowed_host\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
-        for match in re.finditer(allowed_host_pattern, code):
-            mutant = code[:match.start()] + code[match.end():]
+        for mutant, _, _ in remove_if_block_safely(code, allowed_host_pattern):
             mutants.append((mutant, "Removed url_has_allowed_host check"))
 
         # Remove startswith check for redirect URLs
         startswith_pattern = r'if\s+not\s+[\w.]+\.startswith\s*\([^)]*["\']/[^)]*\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
-        for match in re.finditer(startswith_pattern, code):
+        for mutant, _, _ in remove_if_block_safely(code, startswith_pattern):
             if 'redirect' in code.lower():
-                mutant = code[:match.start()] + code[match.end():]
                 mutants.append((mutant, "Removed redirect URL prefix validation"))
+
+        # NEW: Remove urlparse netloc checks (common pattern)
+        # Pattern: if parsed.netloc and parsed.netloc != "domain":
+        netloc_pattern = r'if\s+[\w.]+\.netloc\s+and\s+[\w.]+\.netloc\s*!=\s*["\'][^"\']+["\']\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for mutant, _, _ in remove_if_block_safely(code, netloc_pattern):
+            mutants.append((mutant, "Removed netloc domain validation (open redirect)"))
+
+        # Pattern: if parsed.netloc: (simple netloc existence check)
+        simple_netloc_pattern = r'if\s+[\w.]+\.netloc\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for mutant, _, _ in remove_if_block_safely(code, simple_netloc_pattern):
+            mutants.append((mutant, "Removed netloc check (open redirect)"))
+
+        # Pattern: if parsed.scheme and parsed.scheme not in ('http', 'https'):
+        scheme_pattern = r'if\s+[\w.]+\.scheme\s+and\s+[\w.]+\.scheme\s+not\s+in[^\n]*:\s*\n\s*(raise|return)[^\n]*\n'
+        for mutant, _, _ in remove_if_block_safely(code, scheme_pattern):
+            mutants.append((mutant, "Removed scheme validation (open redirect)"))
+
+        # Alternative: Replace netloc check with False
+        if '.netloc' in code:
+            netloc_check = r'[\w.]+\.netloc\s+and\s+[\w.]+\.netloc\s*!=\s*["\'][^"\']+["\']'
+            for match in re.finditer(netloc_check, code):
+                mutant = code[:match.start()] + 'False' + code[match.end():]
+                try:
+                    ast.parse(mutant)
+                    mutants.append((mutant, "Bypassed netloc domain check"))
+                except SyntaxError:
+                    pass
+
+        # NEW: Remove ALLOWED_DOMAINS check (common pattern)
+        # Pattern: if parsed.netloc and parsed.netloc not in ALLOWED_DOMAINS:
+        allowed_domains_pattern = r'if\s+[\w.]+\.netloc\s+and\s+[\w.]+\.netloc\s+not\s+in\s+\w+\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for m, _, _ in remove_if_block_safely(code, allowed_domains_pattern):
+            mutants.append((m, "Removed ALLOWED_DOMAINS check (open redirect)"))
+
+        # Alternative: Replace "not in ALLOWED_DOMAINS" with False
+        not_in_allowed = r'[\w.]+\.netloc\s+and\s+[\w.]+\.netloc\s+not\s+in\s+\w+'
+        for match in re.finditer(not_in_allowed, code):
+            mutant = code[:match.start()] + 'False' + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "Bypassed ALLOWED_DOMAINS check"))
+            except SyntaxError:
+                pass
+
+        # === NEW: Remove positive domain allowlist check (SecCodePLT pattern) ===
+        # Pattern: if redirect_domain == base_domain or redirect_domain in ALLOWED_DOMAINS:
+        #              return redirect_url
+        #          else:
+        #              raise ValueError("Invalid redirect URL")
+        # Mutation: Remove if/else, keep only the if-body (always redirect)
+        positive_allowlist = re.compile(
+            r'(?P<indent>[ \t]*)if\s+\w+\s*==\s*\w+\s+or\s+\w+\s+in\s+\w*(?:ALLOWED|allowed)\w*\s*:\s*\n'
+            r'(?P<if_body>(?:(?P=indent)[ \t]+[^\n]+\n)+)'
+            r'(?P=indent)else\s*:\s*\n'
+            r'(?:(?P=indent)[ \t]+[^\n]+\n)+'
+        )
+        for mutant, _ in replace_if_else_with_if_body(code, positive_allowlist):
+            mutants.append((mutant, "Removed domain allowlist validation (open redirect)"))
+
+        # === NEW: Remove domain equality + 'in ALLOWED' check (variant) ===
+        # Pattern: if domain in ALLOWED_DOMAINS: return url \n else: raise ...
+        simple_allowlist = re.compile(
+            r'(?P<indent>[ \t]*)if\s+\w+\s+in\s+\w*(?:ALLOWED|allowed)\w*\s*:\s*\n'
+            r'(?P<if_body>(?:(?P=indent)[ \t]+[^\n]+\n)+)'
+            r'(?P=indent)else\s*:\s*\n'
+            r'(?:(?P=indent)[ \t]+[^\n]+\n)+'
+        )
+        for mutant, _ in replace_if_else_with_if_body(code, simple_allowlist):
+            mutants.append((mutant, "Removed domain allowlist check (open redirect)"))
+
+        # === Pass-variant mutants (dead redirect validation) ===
+        redirect_pass_patterns = [
+            (safe_url_pattern, "Dead is_safe_url redirect check"),
+            (allowed_host_pattern, "Dead url_has_allowed_host check"),
+            (startswith_pattern, "Dead redirect URL prefix check"),
+            (netloc_pattern, "Dead netloc domain check"),
+            (simple_netloc_pattern, "Dead netloc existence check"),
+            (scheme_pattern, "Dead scheme validation check"),
+            (allowed_domains_pattern, "Dead ALLOWED_DOMAINS check"),
+        ]
+        for pat, desc in redirect_pass_patterns:
+            for mutant, _, _ in replace_if_body_with_pass(code, pat):
+                mutants.append((mutant, desc + " (pass instead of raise)"))
 
         return mutants
 
@@ -2249,8 +3356,9 @@ class NOCERTVALID(SecurityMutationOperator):
         )
 
     def applies_to(self, code: str) -> bool:
-        patterns = ['verify=True', 'CERT_REQUIRED', 'check_hostname', 'ssl', 'https', 'requests.']
-        return any(p in code for p in patterns)
+        ssl_patterns = ['verify=True', 'CERT_REQUIRED', 'check_hostname', 'ssl', 'https', 'requests.']
+        jwt_patterns = ['jwt.decode', 'algorithms=', 'verify_signature']
+        return any(p in code for p in ssl_patterns) or any(p in code for p in jwt_patterns)
 
     def mutate(self, code: str) -> List[Tuple[str, str]]:
         mutants = []
@@ -2271,6 +3379,64 @@ class NOCERTVALID(SecurityMutationOperator):
             mutant = mutant.replace('check_hostname=True', 'check_hostname=False')
             mutants.append((mutant, "Disabled hostname checking"))
 
+        # JWT: Disable signature verification (CWE-347)
+        # jwt.decode(token, key, algorithms=["HS256"]) → jwt.decode(token, options={"verify_signature": False})
+        if 'jwt.decode' in code:
+            jwt_pattern = r'jwt\.decode\s*\(\s*(\w+)\s*,\s*\w+\s*,\s*algorithms\s*=\s*\[[^\]]+\]\s*\)'
+            for match in re.finditer(jwt_pattern, code):
+                token_var = match.group(1)
+                mutant = code[:match.start()] + f'jwt.decode({token_var}, options={{"verify_signature": False}})' + code[match.end():]
+                try:
+                    ast.parse(mutant)
+                    mutants.append((mutant, "Disabled JWT signature verification"))
+                except SyntaxError:
+                    pass
+
+        # HMAC: Remove hmac.compare_digest check (CWE-347)
+        if 'hmac.compare_digest' in code or 'hmac.new' in code:
+            # Remove HMAC verification check
+            hmac_check = r'if\s+not\s+hmac\.compare_digest\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+            for match in re.finditer(hmac_check, code):
+                mutant = code[:match.start()] + code[match.end():]
+                mutants.append((mutant, "Removed HMAC signature verification"))
+
+            # Replace hmac.compare_digest with True
+            if 'hmac.compare_digest' in code:
+                mutant = re.sub(r'hmac\.compare_digest\s*\([^)]+\)', 'True', code)
+                if mutant != code:
+                    mutants.append((mutant, "Bypassed HMAC signature comparison"))
+
+        # === NEW: ssl.create_default_context() → ssl._create_unverified_context() (SecCodePLT) ===
+        if 'ssl.create_default_context()' in code:
+            mutant = code.replace('ssl.create_default_context()', 'ssl._create_unverified_context()')
+            mutants.append((mutant, "Replaced secure SSL context with unverified context"))
+
+        # === NEW: Remove context=context from starttls() (SecCodePLT) ===
+        # Pattern: server.starttls(context=context) → server.starttls()
+        starttls_ctx = r'(\.starttls\s*\()context\s*=\s*\w+(\))'
+        if re.search(starttls_ctx, code):
+            mutant = re.sub(starttls_ctx, r'\1\2', code)
+            if mutant != code:
+                mutants.append((mutant, "Removed SSL context from starttls (no certificate validation)"))
+
+        # === NEW: Add check_hostname=False + CERT_NONE after ssl context creation (SecCodePLT) ===
+        # Insert context.check_hostname = False; context.verify_mode = ssl.CERT_NONE
+        ctx_create = re.search(r'([ \t]*)(\w+)\s*=\s*ssl\.create_default_context\(\)\s*\n', code)
+        if ctx_create:
+            indent = ctx_create.group(1)
+            ctx_var = ctx_create.group(2)
+            insert_lines = (
+                f'{indent}{ctx_var}.check_hostname = False\n'
+                f'{indent}{ctx_var}.verify_mode = ssl.CERT_NONE\n'
+            )
+            insert_pos = ctx_create.end()
+            mutant = code[:insert_pos] + insert_lines + code[insert_pos:]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "Disabled hostname check and cert verification on SSL context"))
+            except SyntaxError:
+                pass
+
         return mutants
 
 
@@ -2290,29 +3456,82 @@ class FILEUPLOAD(SecurityMutationOperator):
 
     def applies_to(self, code: str) -> bool:
         upload_patterns = ['upload', 'file', 'multipart', 'request.files']
-        extension_patterns = ['allowed_extensions', 'ALLOWED_EXTENSIONS', 'endswith', 'splitext', 'mimetype', 'content_type']
+        extension_patterns = ['allowed_extensions', 'ALLOWED_EXTENSIONS', 'ALLOWED_TYPES', 'allowed_types',
+                              'endswith', 'splitext', 'mimetype', 'content_type', 'imghdr', 'magic.from_']
         return any(u in code.lower() for u in upload_patterns) and any(e in code for e in extension_patterns)
 
     def mutate(self, code: str) -> List[Tuple[str, str]]:
         mutants = []
 
         # Remove extension check: if ext not in ALLOWED_EXTENSIONS
+        # Uses helper function to filter out non-compiling results
         ext_check = r'if\s+[\w.]+\s+not\s+in\s+(ALLOWED_EXTENSIONS|allowed_extensions)[^\n]*:\s*\n\s*(raise|return)[^\n]*\n'
-        for match in re.finditer(ext_check, code):
-            mutant = code[:match.start()] + code[match.end():]
+        for mutant, _, _ in remove_if_block_safely(code, ext_check):
             mutants.append((mutant, "Removed file extension validation"))
 
         # Remove endswith check for extensions
         endswith_check = r'if\s+not\s+[\w.]+\.endswith\s*\([^)]+\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
-        for match in re.finditer(endswith_check, code):
-            mutant = code[:match.start()] + code[match.end():]
+        for mutant, _, _ in remove_if_block_safely(code, endswith_check):
             mutants.append((mutant, "Removed file extension endswith check"))
 
         # Remove mimetype/content_type check
         mime_check = r'if\s+[\w.]+\.(mimetype|content_type)\s+not\s+in[^\n]*:\s*\n\s*(raise|return)[^\n]*\n'
-        for match in re.finditer(mime_check, code):
-            mutant = code[:match.start()] + code[match.end():]
+        for mutant, _, _ in remove_if_block_safely(code, mime_check):
             mutants.append((mutant, "Removed MIME type validation"))
+
+        # Alternative: Replace validation expressions with constants
+        if 'ALLOWED_EXTENSIONS' in code or 'allowed_extensions' in code:
+            # Pattern: ext not in ALLOWED_EXTENSIONS → True (bypass)
+            not_in_pattern = r'([\w.]+)\s+not\s+in\s+(ALLOWED_EXTENSIONS|allowed_extensions)'
+            for match in re.finditer(not_in_pattern, code):
+                mutant = code[:match.start()] + 'False' + code[match.end():]
+                try:
+                    ast.parse(mutant)
+                    mutants.append((mutant, "Replaced 'not in ALLOWED_EXTENSIONS' with False (always allowed)"))
+                except SyntaxError:
+                    pass
+
+            # Pattern: ext in ALLOWED_EXTENSIONS → True
+            in_pattern = r'([\w.]+)\s+in\s+(ALLOWED_EXTENSIONS|allowed_extensions)'
+            for match in re.finditer(in_pattern, code):
+                # Skip if this is part of "not in"
+                if code[match.start()-4:match.start()].rstrip().endswith('not'):
+                    continue
+                mutant = code[:match.start()] + 'True' + code[match.end():]
+                try:
+                    ast.parse(mutant)
+                    mutants.append((mutant, "Replaced extension check with True"))
+                except SyntaxError:
+                    pass
+
+        # NEW: Handle ALLOWED_TYPES pattern (for imghdr, magic, etc.)
+        if 'ALLOWED_TYPES' in code or 'allowed_types' in code:
+            # Pattern: file_type not in ALLOWED_TYPES:
+            type_check = r'if\s+\w+\s+not\s+in\s+(ALLOWED_TYPES|allowed_types)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+            for m, _, _ in remove_if_block_safely(code, type_check):
+                mutants.append((m, "Removed file type validation"))
+
+            # Alternative: Replace "not in ALLOWED_TYPES" with False
+            not_in_types = r'\w+\s+not\s+in\s+(ALLOWED_TYPES|allowed_types)'
+            for match in re.finditer(not_in_types, code):
+                mutant = code[:match.start()] + 'False' + code[match.end():]
+                try:
+                    ast.parse(mutant)
+                    mutants.append((mutant, "Bypassed ALLOWED_TYPES check"))
+                except SyntaxError:
+                    pass
+
+        # === Pass-variant mutants (dead file upload validation) ===
+        for mutant, _, _ in replace_if_body_with_pass(code, ext_check):
+            mutants.append((mutant, "Dead file extension check (pass instead of raise)"))
+        for mutant, _, _ in replace_if_body_with_pass(code, endswith_check):
+            mutants.append((mutant, "Dead endswith extension check (pass instead of raise)"))
+        for mutant, _, _ in replace_if_body_with_pass(code, mime_check):
+            mutants.append((mutant, "Dead MIME type check (pass instead of raise)"))
+        if 'ALLOWED_TYPES' in code or 'allowed_types' in code:
+            type_check = r'if\s+\w+\s+not\s+in\s+(ALLOWED_TYPES|allowed_types)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+            for mutant, _, _ in replace_if_body_with_pass(code, type_check):
+                mutants.append((mutant, "Dead file type check (pass instead of raise)"))
 
         return mutants
 
@@ -2332,8 +3551,40 @@ class INFOEXPOSE(SecurityMutationOperator):
         )
 
     def applies_to(self, code: str) -> bool:
-        patterns = ['DEBUG', 'debug', 'traceback', 'exc_info', 'exception', 'error', 'except']
-        return any(p in code for p in patterns)
+        # Exception handling patterns
+        has_except = 'except' in code or 'Exception' in code
+        has_debug_setting = 'DEBUG = False' in code or 'DEBUG=False' in code
+        has_suppression = bool(re.search(r'except\s+\w*Exception[^:]*:\s*\n\s*(pass|return\s+None|return\s*$)', code))
+        has_traceback = any(p in code for p in ['traceback', 'exc_info', 'print_exc'])
+
+        # Sensitive data filtering patterns (CWE-200)
+        has_sensitive_filter = 'SENSITIVE_KEYS' in code or 'sensitive' in code.lower()
+        has_redaction = 'REDACTED' in code or 'redact' in code.lower() or '***' in code
+
+        # Generic error message patterns (CWE-209)
+        has_generic_error = bool(re.search(r'return\s*\{[^}]*["\']error["\']\s*:\s*["\'][^"\']*["\']', code))
+        has_logger_error = 'logger.error' in code or 'logging.error' in code
+
+        # NEW: Field filtering patterns (CWE-200) - "safe_fields", "public_fields", dict comprehension filtering
+        has_field_filter = any(p in code for p in ['safe_fields', 'public_fields', 'SAFE_FIELDS', 'PUBLIC_FIELDS',
+                                                    'allowed_fields', 'ALLOWED_FIELDS', 'whitelist'])
+        has_dict_filter = bool(re.search(r'if\s+\w+\s+in\s+\w+_fields', code, re.IGNORECASE))
+
+        # Broader: any exception handler that returns a generic message
+        has_safe_error = has_except and has_generic_error
+
+        # NEW: Proxy/wrapper class patterns blocking sensitive attributes (SecCodePLT CWE-200)
+        has_proxy_class = '__getattr__' in code and bool(re.search(
+            r'class\s+\w*(?:Secure|Protect|Filter|Safe|Sanitize)\w*', code, re.IGNORECASE
+        ))
+
+        # Match if ANY of these patterns are found
+        return (has_except and (has_debug_setting or has_suppression or has_traceback)) or \
+               has_sensitive_filter or has_redaction or \
+               has_safe_error or \
+               (has_generic_error and has_logger_error) or \
+               has_field_filter or has_dict_filter or \
+               has_proxy_class
 
     def mutate(self, code: str) -> List[Tuple[str, str]]:
         mutants = []
@@ -2352,6 +3603,147 @@ class INFOEXPOSE(SecurityMutationOperator):
             replacement = f'except Exception as e:\n{indent}import traceback; traceback.print_exc()'
             mutant = code[:match.start()] + replacement + code[match.end():]
             mutants.append((mutant, "Exposed exception details"))
+
+        # NEW: Expose specific exception type as generic
+        # except ValueError as e: ... → except Exception as e: print(e); raise
+        specific_except = r'except\s+(\w+Error|\w+Exception)\s+as\s+(\w+)\s*:'
+        for match in re.finditer(specific_except, code):
+            exc_type = match.group(1)
+            var = match.group(2)
+            if exc_type != 'Exception':
+                replacement = f'except Exception as {var}:'
+                mutant = code[:match.start()] + replacement + code[match.end():]
+                mutants.append((mutant, f"Broadened {exc_type} to Exception (may expose more)"))
+
+        # NEW: Add traceback to existing exception handlers
+        except_block = r'(except\s+\w+[^:]*:\s*\n)(\s+)'
+        for match in re.finditer(except_block, code):
+            block_start = match.group(1)
+            indent = match.group(2)
+            # Check if already has traceback
+            next_line_start = match.end()
+            next_line_end = code.find('\n', next_line_start)
+            next_line = code[next_line_start:next_line_end] if next_line_end > 0 else ''
+            if 'traceback' not in next_line and 'print_exc' not in next_line:
+                insert = f'{indent}import traceback; traceback.print_exc()  # EXPOSED\n'
+                mutant = code[:match.end()] + insert + code[match.end():]
+                mutants.append((mutant, "Added traceback exposure to exception handler"))
+                break  # Only add one to avoid duplicate mutations
+
+        # NEW: Remove sensitive data filtering (CWE-200)
+        # Pattern: if any(s in key.lower() for s in SENSITIVE_KEYS): ... REDACTED
+        sensitive_filter = r'if\s+any\s*\([^)]+SENSITIVE_KEYS[^)]*\)\s*:\s*\n\s*[^\n]+REDACTED[^\n]*\n\s*else:\s*\n\s*[^\n]+\n'
+        for mutant, _, _ in remove_if_block_safely(code, sensitive_filter):
+            mutants.append((mutant, "Removed sensitive data filtering (exposes secrets)"))
+
+        # Alternative: Replace REDACTED with actual value
+        if 'REDACTED' in code:
+            # Pattern: safe_config[key] = "***REDACTED***" → safe_config[key] = value
+            redact_pattern = r'(\w+\[[^\]]+\])\s*=\s*["\'][\*]*REDACTED[\*]*["\']'
+            for match in re.finditer(redact_pattern, code):
+                var = match.group(1)
+                # Try to find the corresponding value variable
+                mutant = code[:match.start()] + f'{var} = value' + code[match.end():]
+                try:
+                    ast.parse(mutant)
+                    mutants.append((mutant, "Exposed redacted sensitive data"))
+                except SyntaxError:
+                    pass
+
+        # NEW: Expose error details (CWE-209)
+        # Pattern: return {"error": "A database error occurred"} → return {"error": str(error)}
+        generic_error = r'return\s*\{\s*["\']error["\']\s*:\s*["\'][^"\']+["\']'
+        for match in re.finditer(generic_error, code):
+            # Find error variable name in function
+            error_var = re.search(r'def\s+\w+\s*\([^)]*(\w*error\w*)[^)]*\)', code, re.IGNORECASE)
+            if error_var:
+                var = error_var.group(1)
+                mutant = code[:match.start()] + f'return {{"error": str({var}), "details": repr({var})' + code[match.end():]
+                try:
+                    ast.parse(mutant)
+                    mutants.append((mutant, "Exposed error details in response"))
+                except SyntaxError:
+                    pass
+
+        # NEW: Remove field filtering (CWE-200) - expose all fields instead of filtered
+        # Pattern: {k: v for k, v in user.items() if k in safe_fields}
+        # Mutation: Replace "if k in safe_fields" with nothing (always include)
+        field_filter_patterns = [
+            r'if\s+\w+\s+in\s+(safe_fields|public_fields|allowed_fields|SAFE_FIELDS|PUBLIC_FIELDS|ALLOWED_FIELDS)',
+            r'if\s+\w+\s+not\s+in\s+(private_fields|sensitive_fields|PRIVATE_FIELDS|SENSITIVE_FIELDS)',
+        ]
+        for pattern in field_filter_patterns:
+            for match in re.finditer(pattern, code):
+                # Replace the filter condition with nothing (expose all)
+                mutant = code[:match.start()] + code[match.end():]
+                try:
+                    ast.parse(mutant)
+                    mutants.append((mutant, "Removed field filtering (exposes all fields)"))
+                except SyntaxError:
+                    pass
+
+        # Alternative: Replace field filter with True
+        field_check_pattern = r'(\w+)\s+in\s+(safe_fields|public_fields|allowed_fields|SAFE_FIELDS|PUBLIC_FIELDS)'
+        for match in re.finditer(field_check_pattern, code):
+            mutant = code[:match.start()] + 'True' + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "Bypassed field filter (all fields exposed)"))
+            except SyntaxError:
+                pass
+
+        # === NEW: Bypass proxy/wrapper class for sensitive attribute filtering (SecCodePLT) ===
+        # Pattern: secured_patient = SecuredPatient(patient)
+        #          return layout.format(patient=secured_patient)
+        # Mutation: Replace the proxy variable with the original object
+        # Step 1: Find proxy class instantiation: proxy_var = ProxyClass(original_var)
+        proxy_classes = re.findall(
+            r'class\s+(\w*(?:Secure|Protect|Filter|Safe|Sanitize)\w*)',
+            code, re.IGNORECASE
+        )
+        for proxy_cls in proxy_classes:
+            # Find instantiation: proxy_var = ProxyClass(original_var)
+            inst_pattern = re.compile(
+                rf'(\w+)\s*=\s*{re.escape(proxy_cls)}\s*\(\s*(\w+)\s*\)'
+            )
+            for inst_match in inst_pattern.finditer(code):
+                proxy_var = inst_match.group(1)
+                original_var = inst_match.group(2)
+                # Replace uses of proxy_var with original_var
+                mutant = code.replace(proxy_var, original_var)
+                # But restore the class name if it was accidentally replaced
+                mutant = mutant.replace(
+                    f'class {original_var if proxy_var in proxy_cls else proxy_cls}',
+                    f'class {proxy_cls}'
+                )
+                try:
+                    ast.parse(mutant)
+                    if mutant != code:
+                        mutants.append((mutant, "Bypassed proxy class (exposes sensitive attributes)"))
+                except SyntaxError:
+                    pass
+
+        # Alternative: Remove the entire proxy class and instantiation
+        for proxy_cls in proxy_classes:
+            # Remove the class definition
+            class_pattern = re.compile(
+                rf'(?P<indent>[ \t]*)class\s+{re.escape(proxy_cls)}\s*.*?:\s*\n'
+                rf'(?:(?P=indent)[ \t]+[^\n]*\n)*',
+            )
+            match = class_pattern.search(code)
+            if match:
+                mutant = code[:match.start()] + code[match.end():]
+                # Also remove the instantiation line
+                inst_line = re.compile(
+                    rf'[ \t]*\w+\s*=\s*{re.escape(proxy_cls)}\s*\([^)]*\)\s*\n'
+                )
+                mutant = inst_line.sub('', mutant)
+                try:
+                    ast.parse(mutant)
+                    if mutant != code:
+                        mutants.append((mutant, "Removed proxy class definition (exposes all data)"))
+                except SyntaxError:
+                    pass
 
         return mutants
 
@@ -2390,6 +3782,12 @@ class WEAKKEY(SecurityMutationOperator):
             mutant = code[:match.start()] + 'bits=64' + code[match.end():]
             mutants.append((mutant, "Reduced encryption bits to weak 64-bit"))
 
+        # RSA.generate(2048) → RSA.generate(512) (positional arg)
+        rsa_gen = r'(RSA\.generate|DSA\.generate)\s*\(\s*(\d{4,})\s*\)'
+        for match in re.finditer(rsa_gen, code):
+            mutant = code[:match.start()] + f'{match.group(1)}(512)' + code[match.end():]
+            mutants.append((mutant, f"Reduced {match.group(1)} key from {match.group(2)} to 512 bits"))
+
         return mutants
 
 
@@ -2408,7 +3806,12 @@ class LDAPINJECT(SecurityMutationOperator):
         )
 
     def applies_to(self, code: str) -> bool:
-        return 'ldap' in code.lower() or 'escape_dn' in code or 'escape_filter' in code
+        if 'ldap' in code.lower() or 'escape_dn' in code or 'escape_filter' in code:
+            return True
+        # XPath injection (CWE-643): parameterized XPath with $variable syntax
+        if '.xpath(' in code and '$' in code:
+            return True
+        return False
 
     def mutate(self, code: str) -> List[Tuple[str, str]]:
         mutants = []
@@ -2434,6 +3837,28 @@ class LDAPINJECT(SecurityMutationOperator):
             # (cn=%s) with bind → (cn='+user+')
             mutant = re.sub(r'%s', "'+user+'", code)
             mutants.append((mutant, "Converted LDAP parameter to string injection"))
+
+        # XPath injection: convert parameterized XPath to f-string injection
+        # Pattern: query = f"//student[username=$username and password=$password]"
+        #          result = root.xpath(query, username=username, password=password)
+        # Mutation: query = f"//student[username='{username}' and password='{password}']"
+        #           result = root.xpath(query)
+        if '.xpath(' in code and '$' in code:
+            # Find the query string with $variable placeholders
+            query_match = re.search(r'(\w+)\s*=\s*f?["\']([^"\']*\$\w+[^"\']*)["\']', code)
+            if query_match:
+                query_var = query_match.group(1)
+                query_str = query_match.group(2)
+                # Replace $var with '{var}' for f-string injection
+                injected_query = re.sub(r'\$(\w+)', r"'{{\1}}'", query_str)
+                mutant = code[:query_match.start()] + f'{query_var} = f"{injected_query}"' + code[query_match.end():]
+                # Remove keyword args from xpath() call
+                mutant = re.sub(r'(\.xpath\s*\(\s*\w+)\s*,\s*\w+=\w+(?:\s*,\s*\w+=\w+)*\s*\)', r'\1)', mutant)
+                try:
+                    ast.parse(mutant)
+                    mutants.append((mutant, "Converted parameterized XPath to f-string injection"))
+                except SyntaxError:
+                    pass
 
         return mutants
 
@@ -2492,10 +3917,25 @@ class REGEXDOS(SecurityMutationOperator):
         )
 
     def applies_to(self, code: str) -> bool:
-        return 're.compile' in code or 're.match' in code or 're.search' in code or 'regex' in code.lower()
+        # Regex patterns (CWE-1333)
+        has_regex = 're.compile' in code or 're.match' in code or 're.search' in code or 'regex' in code.lower()
+        # Resource limits (CWE-400, CWE-770)
+        has_size_limit = 'MAX_SIZE' in code or 'max_size' in code.lower() or 'limit' in code.lower()
+        has_read_limit = '.read(' in code and any(x in code for x in ['MAX', 'LIMIT', 'limit'])
+        # Buffer/memory limits
+        has_buffer_limit = 'MAX_BUFFER' in code or 'BUFFER_SIZE' in code or 'bytearray' in code
+
+        return has_regex or has_size_limit or has_read_limit or has_buffer_limit
 
     def mutate(self, code: str) -> List[Tuple[str, str]]:
         mutants = []
+
+        # Remove re.escape() to allow user-controlled regex (ReDoS)
+        # Pattern: re.compile(re.escape(pattern)) → re.compile(pattern)
+        escape_pattern = r're\.escape\s*\(\s*(\w+)\s*\)'
+        for match in re.finditer(escape_pattern, code):
+            mutant = code[:match.start()] + match.group(1) + code[match.end():]
+            mutants.append((mutant, "Removed re.escape() allowing user-controlled regex (ReDoS)"))
 
         # Simple quantifiers → nested quantifiers (catastrophic backtracking)
         # [a-z]+ → (a+)+
@@ -2509,6 +3949,47 @@ class REGEXDOS(SecurityMutationOperator):
                     vulnerable = '(' + vulnerable if not vulnerable.startswith('(') else vulnerable
                     mutant = code[:match.start()] + f'r"{vulnerable}"' + code[match.end():]
                     mutants.append((mutant, "Introduced nested quantifier (ReDoS vulnerable)"))
+
+        # NEW: Remove size limit checks (CWE-400)
+        # Pattern: if len(content) > MAX_SIZE: raise ValueError
+        size_check = r'if\s+len\s*\([^)]+\)\s*>\s*\w+\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for mutant, _, _ in remove_if_block_safely(code, size_check):
+            mutants.append((mutant, "Removed size limit check (resource exhaustion)"))
+
+        # Pattern: read(MAX_SIZE + 1) → read() (unlimited)
+        read_limit = r'\.read\s*\(\s*\w+\s*\+\s*\d+\s*\)'
+        for match in re.finditer(read_limit, code):
+            mutant = code[:match.start()] + '.read()' + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "Removed read size limit (unlimited read)"))
+            except SyntaxError:
+                pass
+
+        # Pattern: read(SIZE) → read()
+        read_size = r'\.read\s*\(\s*[A-Z_]+\s*\)'
+        for match in re.finditer(read_size, code):
+            mutant = code[:match.start()] + '.read()' + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "Removed read size limit"))
+            except SyntaxError:
+                pass
+
+        # Pattern: if size > MAX_BUFFER_SIZE: (CWE-770)
+        buffer_check = r'if\s+\w+\s*>\s*[A-Z_]+\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for mutant, _, _ in remove_if_block_safely(code, buffer_check):
+            mutants.append((mutant, "Removed buffer size limit check"))
+
+        # Alternative: Replace size comparison with False
+        size_compare = r'\w+\s*>\s*MAX_[A-Z_]+'
+        for match in re.finditer(size_compare, code):
+            mutant = code[:match.start()] + 'False' + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "Bypassed size limit check"))
+            except SyntaxError:
+                pass
 
         return mutants
 
@@ -2535,12 +4016,28 @@ class CREDEXPOSE(SecurityMutationOperator):
         mutants = []
 
         # bcrypt.hashpw → plaintext
+        # Handles: bcrypt.hashpw(password.encode(), bcrypt.gensalt())
         if 'bcrypt.hashpw' in code:
-            pattern = r'bcrypt\.hashpw\s*\(\s*([^,]+),\s*[^)]+\)'
-            for match in re.finditer(pattern, code):
-                password_var = match.group(1).strip()
-                mutant = code[:match.start()] + password_var + code[match.end():]
-                mutants.append((mutant, "Stored password in plaintext instead of bcrypt hash"))
+            # Use balanced paren matching
+            for match in re.finditer(r'bcrypt\.hashpw\s*\(', code):
+                start = match.start()
+                paren_start = match.end() - 1
+                depth = 1
+                pos = paren_start + 1
+                first_arg_end = None
+                while pos < len(code) and depth > 0:
+                    if code[pos] == '(':
+                        depth += 1
+                    elif code[pos] == ')':
+                        depth -= 1
+                    elif code[pos] == ',' and depth == 1 and first_arg_end is None:
+                        first_arg_end = pos
+                    pos += 1
+                if depth == 0:
+                    end = pos
+                    first_arg = code[paren_start + 1:first_arg_end].strip() if first_arg_end else code[paren_start + 1:end - 1].strip()
+                    mutant = code[:start] + first_arg + code[end:]
+                    mutants.append((mutant, "Stored password in plaintext instead of bcrypt hash"))
 
         # Remove password hashing
         if 'hash(' in code.lower() and 'password' in code.lower():
@@ -2550,6 +4047,52 @@ class CREDEXPOSE(SecurityMutationOperator):
                 original = match.group(2)
                 mutant = code[:match.start()] + f'{var_name} = {original}' + code[match.end():]
                 mutants.append((mutant, "Removed password hashing"))
+
+        # pbkdf2_hmac → plaintext
+        # Handles: hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000).hex()
+        if 'pbkdf2_hmac' in code:
+            # Match the full expression including any chained methods
+            for match in re.finditer(r'hashlib\.pbkdf2_hmac\s*\(', code):
+                start = match.start()
+                paren_start = match.end() - 1
+                depth = 1
+                pos = paren_start + 1
+                while pos < len(code) and depth > 0:
+                    if code[pos] == '(':
+                        depth += 1
+                    elif code[pos] == ')':
+                        depth -= 1
+                    pos += 1
+                if depth == 0:
+                    end = pos
+                    # Check for chained methods like .hex()
+                    rest = code[end:]
+                    chain_match = re.match(r'(\.\w+\(\))+', rest)
+                    if chain_match:
+                        end += chain_match.end()
+                    # Find the assignment variable
+                    before = code[:start]
+                    assign_match = re.search(r'(\w+)\s*=\s*$', before)
+                    if assign_match:
+                        var_name = assign_match.group(1)
+                        assign_start = before.rfind(var_name)
+                        mutant = code[:assign_start] + f'{var_name} = password.encode().hex()' + code[end:]
+                        mutants.append((mutant, "Replaced pbkdf2_hmac with plaintext storage"))
+
+        # Remove REDACTED/redaction pattern
+        if 'REDACTED' in code or 'redact' in code.lower():
+            # Replace redaction with original value
+            redact_pattern = r'["\'](?:\*{3,}|REDACTED|redacted)["\']'
+            for match in re.finditer(redact_pattern, code):
+                # Replace REDACTED with the sensitive value
+                mutant = code[:match.start()] + 'value' + code[match.end():]
+                mutants.append((mutant, "Removed credential redaction"))
+
+        # Remove sensitive field filtering
+        filter_pattern = r'if\s+\w+\s+(?:not\s+)?in\s+(?:SENSITIVE_KEYS|sensitive_fields|EXCLUDED_FIELDS)[^\n]*:\s*\n\s*continue\n'
+        for match in re.finditer(filter_pattern, code):
+            mutant = code[:match.start()] + code[match.end():]
+            mutants.append((mutant, "Removed sensitive field filtering"))
 
         return mutants
 
@@ -2610,18 +4153,26 @@ class MISSINGAUTH(SecurityMutationOperator):
         )
 
     def applies_to(self, code: str) -> bool:
-        patterns = ['has_permission', 'is_admin', 'is_owner', 'can_access', 'authorize', 'allowed', 'role']
-        return any(p in code.lower() for p in patterns)
+        auth_patterns = ['has_permission', 'is_admin', 'is_owner', 'can_access', 'authorize', 'allowed', 'role']
+        owner_patterns = ['owner_id', '.owner', 'user.id', 'user_id', 'current_user']
+        permission_patterns = ['0o600', '0o700', '0o755', 'mode=', 'os.chmod', 'shutil.copy2', 'shutil.move']
+        # NEW: Direct auth parameter checks
+        param_patterns = ['!= current_user', '!= user_id', 'PermissionError']
+
+        code_lower = code.lower()
+        return any(p in code_lower for p in auth_patterns) or \
+               any(p in code for p in owner_patterns) or \
+               any(p in code for p in permission_patterns) or \
+               any(p in code for p in param_patterns)
 
     def mutate(self, code: str) -> List[Tuple[str, str]]:
         mutants = []
 
-        # Remove permission checks
+        # Remove permission function checks
         perm_patterns = ['has_permission', 'has_perm', 'check_permission', 'can_access', 'is_allowed']
         for func in perm_patterns:
             pattern = rf'if\s+not\s+[\w.]*{func}\s*\([^)]*\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
-            for match in re.finditer(pattern, code, re.IGNORECASE):
-                mutant = code[:match.start()] + code[match.end():]
+            for mutant, _, _ in remove_if_block_safely(code, pattern, re.IGNORECASE):
                 mutants.append((mutant, f"Removed {func} authorization check"))
 
         # Replace permission check with True
@@ -2629,7 +4180,225 @@ class MISSINGAUTH(SecurityMutationOperator):
             pattern = rf'[\w.]*{func}\s*\([^)]*\)'
             for match in re.finditer(pattern, code, re.IGNORECASE):
                 mutant = code[:match.start()] + 'True' + code[match.end():]
-                mutants.append((mutant, f"Bypassed {func} with True"))
+                try:
+                    ast.parse(mutant)
+                    mutants.append((mutant, f"Bypassed {func} with True"))
+                except SyntaxError:
+                    pass
+
+        # NEW: Remove owner_id checks (CWE-863)
+        # Pattern: if resource.owner_id != user.id and not user.is_admin:
+        owner_check = r'if\s+[\w.]+\.owner_id\s*!=\s*[\w.]+(?:\s+and[^\n]+)?\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for mutant, _, _ in remove_if_block_safely(code, owner_check):
+            mutants.append((mutant, "Removed owner_id authorization check"))
+
+        # Pattern: if doc.owner_id != user_id:
+        simple_owner = r'if\s+[\w.]+\.owner_id\s*!=\s*\w+\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for mutant, _, _ in remove_if_block_safely(code, simple_owner):
+            mutants.append((mutant, "Removed ownership verification"))
+
+        # Alternative: Replace owner_id check with False (always compiles)
+        owner_condition = r'[\w.]+\.owner_id\s*!=\s*[\w.]+(?:\s+and\s+not\s+[\w.]+)?'
+        for match in re.finditer(owner_condition, code):
+            mutant = code[:match.start()] + 'False' + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "Bypassed owner_id check"))
+            except SyntaxError:
+                pass
+
+        # NEW: Remove is_admin/user_id combo checks
+        # Pattern: if not is_admin and user_id != current_user:
+        admin_user_pattern = r'if\s+not\s+is_admin\s+and\s+[\w.]+\s*!=\s*[\w.]+\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for m, _, _ in remove_if_block_safely(code, admin_user_pattern):
+            mutants.append((m, "Removed is_admin+user_id authorization check"))
+
+        # Pattern: if current_user.id != user_id and not is_admin:
+        user_admin_pattern = r'if\s+[\w.]+\s*!=\s*[\w.]+\s+and\s+not\s+[\w.]+\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for m, _, _ in remove_if_block_safely(code, user_admin_pattern):
+            mutants.append((m, "Removed user/is_admin authorization check"))
+
+        # Pattern: if not current_user.is_admin:
+        is_admin_pattern = r'if\s+not\s+[\w.]+\.is_admin\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for m, _, _ in remove_if_block_safely(code, is_admin_pattern):
+            mutants.append((m, "Removed is_admin check"))
+
+        # Alternative: Replace the condition with False
+        auth_condition = r'[\w.]+\s*!=\s*[\w.]+\s+and\s+not\s+[\w.]+'
+        for match in re.finditer(auth_condition, code):
+            mutant = code[:match.start()] + 'False' + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "Bypassed authorization check"))
+            except SyntaxError:
+                pass
+
+        # Alternative: Replace .is_admin with True
+        is_admin_check = r'[\w.]+\.is_admin'
+        for match in re.finditer(is_admin_check, code):
+            mutant = code[:match.start()] + 'True' + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "Bypassed .is_admin check with True"))
+            except SyntaxError:
+                pass
+
+        # NEW: Weaken file permissions (CWE-276)
+        # 0o600 → 0o777 (restrictive → world-readable)
+        if '0o600' in code:
+            mutant = code.replace('0o600', '0o777')
+            mutants.append((mutant, "Weakened file permissions 0o600 → 0o777"))
+        if '0o700' in code:
+            mutant = code.replace('0o700', '0o777')
+            mutants.append((mutant, "Weakened directory permissions 0o700 → 0o777"))
+
+        # mode=0o700 → mode=0o777
+        mode_pattern = r'mode\s*=\s*0o[67]00'
+        for match in re.finditer(mode_pattern, code):
+            mutant = code[:match.start()] + 'mode=0o777' + code[match.end():]
+            mutants.append((mutant, "Weakened mode permissions"))
+
+        # NEW: Replace restrictive calls (CWE-281)
+        # shutil.copy2 → shutil.copy (doesn't preserve permissions)
+        if 'shutil.copy2' in code:
+            mutant = code.replace('shutil.copy2', 'shutil.copy')
+            mutants.append((mutant, "shutil.copy2 → shutil.copy (loses permissions)"))
+
+        # === NEW: Remove .role != check ===
+        # Pattern: if user.role != 'admin': raise PermissionError(...)
+        role_check = r'[ \t]*if\s+[\w.]+\.role\s*!=\s*["\'][^"\']+["\']\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for mutant, _, _ in remove_if_block_safely(code, role_check):
+            mutants.append((mutant, "Removed role-based authorization check"))
+
+        # Alternative: Replace role check condition with False
+        role_condition = r'[\w.]+\.role\s*!=\s*["\'][^"\']+["\']'
+        for match in re.finditer(role_condition, code):
+            mutant = code[:match.start()] + 'False' + code[match.end():]
+            try:
+                ast.parse(mutant)
+                mutants.append((mutant, "Bypassed role check with False"))
+            except SyntaxError:
+                pass
+
+        # === NEW: Remove PermissionError raise blocks ===
+        # Pattern: if <condition>: raise PermissionError(...)
+        perm_error = r'[ \t]*if\s+[^:]+:\s*\n\s+raise\s+PermissionError\([^)]*\)\s*\n'
+        for mutant, _, _ in remove_if_block_safely(code, perm_error):
+            mutants.append((mutant, "Removed PermissionError authorization check"))
+
+        # === NEW: Remove != current_user checks ===
+        # Pattern: if user_id != current_user.id: raise ...
+        user_neq = r'[ \t]*if\s+[\w.]+\s*!=\s*current_user[\w.]*\s*:\s*\n\s*(raise|return)[^\n]*\n'
+        for mutant, _, _ in remove_if_block_safely(code, user_neq):
+            mutants.append((mutant, "Removed current_user authorization check"))
+
+        # === NEW: Remove inline role/owner equality checks (SecCodePLT pattern) ===
+        # Pattern: if var == var or DICT[var]['role'] == 'admin':
+        #              return AUTHORIZED_DATA
+        #          else:
+        #              return "Unauthorized"
+        # Mutation: Remove the if/else, keep only the authorized body (dedented)
+        inline_auth_pattern = re.compile(
+            r'(?P<indent>[ \t]*)if\s+\w+\s*==\s*\w+\s+or\s+\w+\[[\w\'"]+\]\[[\'"]\w+[\'"]\]\s*==\s*[\'"][^\'"]+[\'"]\s*:\s*\n'
+            r'(?P<if_body>(?:(?P=indent)[ \t]+[^\n]+\n)+)'
+            r'(?P=indent)else\s*:\s*\n'
+            r'(?:(?P=indent)[ \t]+[^\n]+\n)+'
+        )
+        for mutant, _ in replace_if_else_with_if_body(code, inline_auth_pattern):
+            mutants.append((mutant, "Removed inline role/owner authorization check"))
+
+        # === NEW: Remove equality+role check with dict-based role lookup ===
+        # Broader pattern: if <cond> or <DICT>[<key>]['role'] == '<role>':
+        #   ... else: return "Unauthorized"
+        # Strategy: find lines with ['role'] == check, then parse the if/else block structurally
+        if "['role']" in code or '["role"]' in code:
+            for line_match in re.finditer(
+                r'^(?P<indent>[ \t]*)if\s+.+\[\s*[\'"]role[\'"]\s*\]\s*==\s*[\'"][^\'"]+[\'"]\s*:\s*$',
+                code, re.MULTILINE
+            ):
+                indent = line_match.group('indent')
+                if_start = line_match.start()
+                # Find lines after the if that are more indented (if-body)
+                rest = code[line_match.end()+1:]
+                if_body_lines = []
+                pos = line_match.end() + 1
+                for line in rest.split('\n'):
+                    if line.strip() and not line.startswith(indent + ' ') and not line.startswith(indent + '\t'):
+                        break
+                    if_body_lines.append(line)
+                    pos += len(line) + 1
+                # Check if next non-body line is 'else:'
+                after_if = code[pos - 1:] if pos > 0 else ''
+                else_match = re.match(rf'^{re.escape(indent)}else\s*:\s*\n', after_if)
+                if else_match:
+                    # Find else-body
+                    else_end = pos - 1 + else_match.end()
+                    else_rest = code[else_end:]
+                    for line in else_rest.split('\n'):
+                        if line.strip() and not line.startswith(indent + ' ') and not line.startswith(indent + '\t'):
+                            break
+                        else_end += len(line) + 1
+                    # Dedent the if-body
+                    dedented = []
+                    for line in if_body_lines:
+                        if line.strip():
+                            if line.startswith(indent + '    '):
+                                dedented.append(indent + line[len(indent)+4:])
+                            elif line.startswith(indent + '\t'):
+                                dedented.append(indent + line[len(indent)+1:])
+                            else:
+                                dedented.append(line)
+                        else:
+                            dedented.append(line)
+                    replacement = '\n'.join(dedented) + '\n'
+                    mutant = code[:if_start] + replacement + code[else_end:]
+                    try:
+                        ast.parse(mutant)
+                        mutants.append((mutant, "Removed dict-based role authorization check"))
+                    except SyntaxError:
+                        pass
+                else:
+                    # No else block - just remove the if condition, keep body dedented
+                    if if_body_lines:
+                        dedented = []
+                        for line in if_body_lines:
+                            if line.strip():
+                                if line.startswith(indent + '    '):
+                                    dedented.append(indent + line[len(indent)+4:])
+                                elif line.startswith(indent + '\t'):
+                                    dedented.append(indent + line[len(indent)+1:])
+                                else:
+                                    dedented.append(line)
+                            else:
+                                dedented.append(line)
+                        # End of if-body is at pos-1
+                        if_end = line_match.end() + 1 + sum(len(l)+1 for l in if_body_lines)
+                        replacement = '\n'.join(dedented) + '\n'
+                        mutant = code[:if_start] + replacement + code[if_end:]
+                        try:
+                            ast.parse(mutant)
+                            mutants.append((mutant, "Removed role-based authorization guard"))
+                        except SyntaxError:
+                            pass
+
+        # === Pass-variant mutants (dead authorization checks) ===
+        missingauth_pass_patterns = [
+            (owner_check, "Dead owner_id authorization check"),
+            (simple_owner, "Dead ownership verification"),
+            (admin_user_pattern, "Dead is_admin+user_id check"),
+            (user_admin_pattern, "Dead user/is_admin check"),
+            (is_admin_pattern, "Dead is_admin check"),
+            (role_check, "Dead role-based authorization check"),
+            (perm_error, "Dead PermissionError check"),
+            (user_neq, "Dead current_user check"),
+        ]
+        for pat, desc in missingauth_pass_patterns:
+            for mutant, _, _ in replace_if_body_with_pass(code, pat):
+                mutants.append((mutant, desc + " (pass instead of raise)"))
+        for func in perm_patterns:
+            pattern = rf'if\s+not\s+[\w.]*{func}\s*\([^)]*\)\s*:\s*\n\s*(raise|return)[^\n]*\n'
+            for mutant, _, _ in replace_if_body_with_pass(code, pattern, re.IGNORECASE):
+                mutants.append((mutant, f"Dead {func} check (pass instead of raise)"))
 
         return mutants
 
@@ -2656,7 +4425,7 @@ class HTTPRS(SecurityMutationOperator):
 
         # Remove newline stripping from headers
         if 'header' in code.lower():
-            strip_pattern = r'\.replace\s*\(\s*["\'][\\]?[rn]["\'],\s*["\']["\'\s*\)'
+            strip_pattern = r'\.replace\s*\(\s*["\'][\\]?[rn]["\'],\s*["\']["\']?\s*\)'
             if re.search(strip_pattern, code):
                 mutant = re.sub(strip_pattern, '', code)
                 mutants.append((mutant, "Removed CRLF sanitization from headers"))

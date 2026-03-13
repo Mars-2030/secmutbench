@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 SecMutBench is a benchmark for evaluating how well LLMs generate security tests that detect vulnerabilities. Given secure code and a CWE category, an LLM generates security tests evaluated via mutation testing—tests that detect injected vulnerabilities (kill mutants) demonstrate genuine security awareness.
 
 - **Language**: Python 3.11 (required - MutPy incompatible with 3.12+)
-- **Dataset**: 304 samples, 15 CWEs, 18 mutation operators, 737 pre-generated mutants
-- **Version**: 2.4.0
+- **Dataset**: 119 samples, 29 CWEs, 33 mutation operators, 326 pre-generated mutants
+- **Version**: 2.5.1
 
 ## Environment Setup
 
@@ -89,15 +89,15 @@ Benchmark Sample → Generate/Load Mutants → Run Tests (subprocess+pytest)
 - `metrics.py`: Mutation score, security precision, aggregations
 - `llm_judge.py`: Multi-modal evaluation (Anthropic/OpenAI/Google)
 - `prompts.py`: Unified prompt templates and `MOCK_ENVIRONMENT_DOCS` for test generation
-- `attack_vectors.py`: `CWE_ATTACK_VECTORS` - predefined attack patterns per CWE for coverage checking
+- `archive/attack_vectors.py`: `CWE_ATTACK_VECTORS` - predefined attack patterns per CWE for coverage checking (archived)
 - `conftest_template.py`: Template for injecting mocks into test subprocesses
 - `mocks/`: SafeOS wrapper and mock objects (database, subprocess, filesystem, crypto, etc.)
 
-**operators/** - 19 security mutation operators:
+**operators/** - 33 security mutation operators:
 - `security_operators.py`: Operator base class and implementations
 - `operator_registry.py`: CWE-to-operator mappings (`CWE_OPERATOR_MAP`)
 
-Key operators: PSQLI (SQL injection), CMDINJECT (command injection), PATHCONCAT (path traversal), WEAKCRYPTO (weak crypto), DESERIAL (unsafe deserialization), XXE, SSRF, SSTI, IDOR, CORS_WEAK, CSRF_REMOVE, WEAKRANDOM
+Key operators: PSQLI (SQL injection), RVALID (remove validation), INPUTVAL (input validation bypass), SUBDOMAIN_SPOOF (subdomain spoofing), RHTTPO (remove HTTP-only), WEAKCRYPTO (weak crypto), HARDCODE (hardcoded creds), RMAUTH (remove auth), PATHCONCAT (path traversal), CMDINJECT (command injection), RENCRYPT (remove encryption), DESERIAL (unsafe deserialization), SSRF, IDOR, XXE, SSTI, CORS_WEAK, CSRF_REMOVE, WEAKRANDOM, EVALINJECT, LOGINJECT, OPENREDIRECT, NOCERTVALID, FILEUPLOAD, INFOEXPOSE, WEAKKEY, LDAPINJECT, XMLBOMB, REGEXDOS, CREDEXPOSE, WEAKPASSREQ, MISSINGAUTH, HTTPRS
 
 **baselines/** - Evaluation baselines:
 - `run_llm_baselines.py`: Standalone LLM evaluation with stratified sampling
@@ -165,4 +165,4 @@ Classification uses `OPERATOR_SECURITY_PATTERNS` in evaluate.py to match operato
 3. Register in `operators/operator_registry.py` OPERATORS dict
 4. Map to CWEs in `CWE_OPERATOR_MAP`
 5. Add security patterns to `OPERATOR_SECURITY_PATTERNS` in `evaluation/evaluate.py`
-6. Add attack vectors to `CWE_ATTACK_VECTORS` in `evaluation/attack_vectors.py`
+6. Add attack payloads to `OPERATOR_ATTACK_PAYLOADS` in `evaluation/evaluate.py`

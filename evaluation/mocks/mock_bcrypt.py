@@ -37,13 +37,37 @@ class MockBcrypt:
         return b"$2b$12$LQv3c1yqBWVHxkd0LHAkCO"
 
     def checkpw(self, password: bytes, hashed: bytes) -> bool:
-        """Mock bcrypt.checkpw() - verify a password against hash."""
+        """Mock bcrypt.checkpw() - verify a password against hash.
+
+        For security tests with fake credentials, returns False (credential rejected).
+        Only returns True for known test passwords that match their hashes.
+
+        This ensures:
+        - Secure code with fake credentials → returns False → test PASSES
+        - RMAUTH mutant (no bcrypt check) → bypasses this → test FAILS
+        """
         self.check_called = True
         if isinstance(password, str):
             password = password.encode()
-        # For testing, accept if hash looks like bcrypt
-        if hashed and hashed.startswith(b"$2"):
-            return True
+        if isinstance(hashed, str):
+            hashed = hashed.encode()
+
+        # Known test password-hash pairs (matching MockDatabase users)
+        # These simulate successful authentication for functional tests
+        known_pairs = {
+            b"test_password_alice": b"$2b$12$LQv3c1yqBWVHxkd0LHAkCOtest_alice_hash",
+            b"test_password_bob": b"$2b$12$LQv3c1yqBWVHxkd0LHAkCOtest_bob_hash",
+            b"test_password_charlie": b"$2b$12$LQv3c1yqBWVHxkd0LHAkCOtest_charlie_hash",
+            b"correct_password": b"$2b$12$LQv3c1yqBWVHxkd0LHAkCO",  # Generic test password
+        }
+
+        # Check if this is a known valid password-hash pair
+        if password in known_pairs:
+            # Return True only if the hash also matches
+            if hashed and hashed.startswith(known_pairs[password][:30]):
+                return True
+
+        # For any fake/unknown password, return False (secure rejection)
         return False
 
 

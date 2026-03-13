@@ -31,6 +31,13 @@ from .llm_judge import (
     create_evaluator,
     format_multimodal_report,
 )
+from .version import (
+    __version__,
+    __benchmark_version__,
+    get_version_info,
+    check_compatibility,
+    format_version_string,
+)
 
 __all__ = [
     # Mutation Engine
@@ -60,4 +67,10 @@ __all__ = [
     'TestQualityJudge',
     'create_evaluator',
     'format_multimodal_report',
+    # Version
+    '__version__',
+    '__benchmark_version__',
+    'get_version_info',
+    'check_compatibility',
+    'format_version_string',
 ]

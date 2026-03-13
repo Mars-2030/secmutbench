@@ -682,9 +682,9 @@ class MultiModalEvaluator:
 
             # Security relevance prompt
             sec_prompt = prompts['security_prompt'](
-                test_code=tests,
-                target_code=sample.get('secure_code', ''),
-                cwe_id=sample.get('cwe', 'Unknown'),
+                code=sample.get('secure_code', ''),
+                tests=tests,
+                cwe=sample.get('cwe', 'Unknown'),
                 cwe_name=sample.get('cwe_name', 'vulnerability'),
             )
             security_requests.append(BatchRequest(
@@ -696,9 +696,9 @@ class MultiModalEvaluator:
 
             # Test quality prompt
             qual_prompt = prompts['quality_prompt'](
-                test_code=tests,
-                target_code=sample.get('secure_code', ''),
-                cwe_id=sample.get('cwe', 'Unknown'),
+                tests=tests,
+                entry_point=sample.get('entry_point', 'function'),
+                cwe=sample.get('cwe', 'Unknown'),
                 difficulty=sample.get('difficulty', 'unknown'),
             )
             quality_requests.append(BatchRequest(

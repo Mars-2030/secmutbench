@@ -2,7 +2,7 @@
 
 A benchmark for evaluating LLM-generated security tests using mutation testing.
 
-**Version:** 2.5.2
+**Version:** 2.8.0
 
 ## Overview
 
@@ -12,51 +12,77 @@ SecMutBench evaluates whether Large Language Models (LLMs) can generate effectiv
 
 - **Security-Focused**: Samples mapped to Common Weakness Enumeration (CWE) vulnerability types
 - **Mutation Testing Evaluation**: Test quality measured by ability to kill security-relevant mutants
-- **32 Security Mutation Operators**: Custom operators that inject realistic vulnerability patterns with multiple variants
+- **25 Active Security Mutation Operators**: Custom operators that inject realistic vulnerability patterns with multiple variants
+- **LLM Variation Pipeline**: Semantic-preserving code transformations to expand dataset while maintaining vulnerability patterns
 - **Mock-State Observability**: Layer 1.5 classification detecting tests that access security-relevant mock attributes
-- **Pre-generated Mutants**: Deterministic mutant sets stored in dataset for reproducible evaluation
+- **Pre-generated Mutants**: 1,869 deterministic mutants stored in dataset (avg 5.5/sample) for reproducible evaluation
 - **Multi-Modal Evaluation**: Combines mutation testing with LLM-as-judge metrics
 - **CWE-Strict Operator Mapping**: Operators only fire on samples matching their target CWEs (no cross-contamination)
+- **Multi-Source**: Samples from SecMutBench, CWEval, SecurityEval, and LLM-generated variations
 
 ## Statistics
 
 | Metric | Value |
 |--------|-------|
-| Total Samples | 304 |
-| Viable CWE Types | 24 |
+| Total Samples | 339 |
+| CWE Types | 30 |
 | Languages | Python |
-| Core Mutation Operators | 18 |
-| Extended Operators | 14 |
-| Total Operators | 32 |
-| CWE Mappings | 49 |
+| Active Mutation Operators | 25 |
+| Pre-generated Mutants | 1,869 |
+| Avg Mutants/Sample | 5.5 |
+| Compilability | 100% |
 
 ### CWE Distribution
 
 | CWE | Name | Samples |
 |-----|------|---------|
-| CWE-22 | Path Traversal | 60 |
-| CWE-79 | Cross-Site Scripting (XSS) | 54 |
-| CWE-78 | OS Command Injection | 39 |
-| CWE-502 | Insecure Deserialization | 32 |
-| CWE-327 | Weak Cryptography | 29 |
-| CWE-352 | Cross-Site Request Forgery | 29 |
-| CWE-918 | SSRF | 22 |
-| CWE-94 | Code Injection | 10 |
-| CWE-611 | XXE Injection | 7 |
-| CWE-306 | Missing Authentication | 6 |
-| CWE-89 | SQL Injection | 5 |
-| CWE-287 | Improper Authentication | 4 |
-| CWE-798 | Hardcoded Credentials | 3 |
-| CWE-20 | Improper Input Validation | 2 |
-| CWE-319 | Cleartext Transmission | 2 |
+| CWE-319 | Cleartext Transmission | 18 |
+| CWE-89 | SQL Injection | 16 |
+| CWE-306 | Missing Authentication | 16 |
+| CWE-22 | Path Traversal | 15 |
+| CWE-918 | SSRF | 15 |
+| CWE-94 | Code Injection | 15 |
+| CWE-400 | Resource Exhaustion (ReDoS) | 15 |
+| CWE-352 | Cross-Site Request Forgery | 14 |
+| CWE-295 | Improper Certificate Validation | 14 |
+| CWE-79 | Cross-Site Scripting (XSS) | 13 |
+| CWE-798 | Hardcoded Credentials | 13 |
+| CWE-611 | XXE Injection | 13 |
+| CWE-327 | Weak Cryptography | 12 |
+| CWE-732 | Incorrect Permission Assignment | 12 |
+| CWE-117 | Log Injection | 12 |
+| CWE-74 | Injection | 11 |
+| CWE-328 | Weak Hash | 11 |
+| CWE-338 | Weak PRNG | 11 |
+| CWE-601 | Open Redirect | 11 |
+| CWE-502 | Insecure Deserialization | 10 |
+| CWE-862 | Missing Authorization | 10 |
+| CWE-326 | Inadequate Key Size | 10 |
+| CWE-20 | Improper Input Validation | 9 |
+| CWE-95 | Eval Injection | 8 |
+| CWE-643 | XPath Injection | 8 |
+| CWE-209 | Info Exposure in Error | 7 |
+| CWE-434 | Unrestricted File Upload | 5 |
+| CWE-639 | Insecure Direct Object Reference | 5 |
+| CWE-863 | Incorrect Authorization | 5 |
+| CWE-915 | Mass Assignment | 5 |
 
 ### Difficulty Distribution
 
 | Difficulty | Samples |
 |------------|---------|
-| Easy | 25 |
-| Medium | 205 |
-| Hard | 74 |
+| Easy | 136 |
+| Medium | 101 |
+| Hard | 102 |
+
+### Source Distribution
+
+| Source | Samples |
+|--------|---------|
+| SecMutBench (original) | 75 |
+| CWEval | 3 |
+| SecurityEval | 3 |
+| LLM_Variation | 258 |
 
 ## Quick Start
 
@@ -75,8 +101,8 @@ pip install -r requirements.txt
 
 ```bash
 python -m evaluation.evaluate --version
-# SecMutBench v2.5.0
-# Benchmark: v2.5
+# SecMutBench v2.8.0
+# Benchmark: v2.8.0
 # Python: 3.11.5
 # Dependencies: ...
 ```
@@ -143,60 +169,50 @@ python baselines/run_static_analysis.py --tool bandit
 
 ## Security Mutation Operators
 
-### Core Operators (18)
+### Active Operators (25)
 
-| Operator | Description | Target CWEs | Variants |
-|----------|-------------|-------------|----------|
-| PSQLI | Parameterized SQL to string concatenation | CWE-89 | 4 (f-string, .format, %, +) |
-| RVALID | Remove input validation/sanitization | CWE-20, CWE-79 | 1 |
-| CMDINJECT | Enable shell command injection | CWE-78 | 9 (shell=True, os.system, os.popen, etc.) |
-| PATHCONCAT | Unsafe path concatenation | CWE-22 | 1 |
-| RMAUTH | Remove authentication checks | CWE-287, CWE-306 | 1 |
-| HARDCODE | Inject hardcoded credentials | CWE-798 | 5 (admin123, password, 123456, etc.) |
-| WEAKCRYPTO | Use weak cryptographic algorithms (MD5/SHA1) | CWE-327 | 1 |
-| WEAKRAND | Use weak random (random instead of secrets) | CWE-338 | 1 |
-| RHTTPO | Remove HttpOnly cookie flag | CWE-1004 | 1 |
-| RENCRYPT | Remove encryption/TLS | CWE-319 | 1 |
-| DESERIAL | Unsafe deserialization (pickle.loads) | CWE-502 | 1 |
-| YAMLLOAD | Unsafe YAML load | CWE-502 | 1 |
-| XXENABLE | Enable external XML entities | CWE-611 | 1 |
-| SSRFOPEN | Remove SSRF URL validation | CWE-918 | 1 |
-| EVALINJECT | Enable eval/exec injection | CWE-94, CWE-95 | 1 |
-| JWTVERIFY | Disable JWT signature verification | CWE-287 | 1 |
-| BCRYPTCOST | Reduce bcrypt cost factor | CWE-327 | 1 |
-| ENVLEAK | Expose environment secrets | CWE-798 | 1 |
-
-### Extended Operators (14 new in v2.5.0)
-
-| Operator | Description | Target CWEs | Has Source Material |
-|----------|-------------|-------------|---------------------|
-| OPENREDIRECT | Remove redirect URL validation | CWE-601 | ✓ |
-| NOCERTVALID | Disable SSL certificate verification | CWE-295 | ✓ |
-| INFOEXPOSE | Expose sensitive data in errors | CWE-209 | ✓ |
-| REGEXDOS | Introduce ReDoS-vulnerable patterns | CWE-400, CWE-1333 | ✓ |
-| MISSINGAUTH | Remove authorization checks | CWE-862 | ✓ |
-| INSUFFLOG | Remove security logging | CWE-778 | ✗ |
-| NULLCHECK | Remove null pointer checks | CWE-476 | ✗ |
-| MEMLEAK | Remove resource cleanup | CWE-401 | ✗ |
-| INTOVERFLOW | Remove integer overflow checks | CWE-190 | ✗ |
-| RACECOND | Remove synchronization | CWE-362 | ✗ |
-| PRIVESC | Weaken permission checks | CWE-269 | ✗ |
-| SESSIONFIX | Disable session regeneration | CWE-384 | ✗ |
-| XMLINJECT | Remove XML special char escaping | CWE-91 | ✗ |
+| Operator | Description | Target CWEs |
+|----------|-------------|-------------|
+| PSQLI | Parameterized SQL to string concatenation | CWE-89 |
+| RVALID | Remove input validation/sanitization | CWE-20, CWE-79 |
+| INPUTVAL | Remove input validation checks | CWE-20 |
+| PATHCONCAT | Unsafe path concatenation | CWE-22 |
+| RMAUTH | Remove authentication checks | CWE-287, CWE-306 |
+| HARDCODE | Inject hardcoded credentials | CWE-798 |
+| WEAKCRYPTO | Use weak cryptographic algorithms (MD5/SHA1) | CWE-327 |
+| WEAKKEY | Use inadequate key sizes | CWE-326 |
+| WEAKRANDOM | Use weak PRNG (random instead of secrets) | CWE-338 |
+| RENCRYPT | Remove encryption/TLS | CWE-319 |
+| DESERIAL | Unsafe deserialization (pickle.loads) | CWE-502 |
+| XXE | Enable external XML entities | CWE-611 |
+| SSRF | Remove SSRF URL validation | CWE-918 |
+| EVALINJECT | Enable eval/exec injection | CWE-94, CWE-95 |
+| OPENREDIRECT | Remove redirect URL validation | CWE-601 |
+| NOCERTVALID | Disable SSL certificate verification | CWE-295 |
+| INFOEXPOSE | Expose sensitive data in errors | CWE-209 |
+| REGEXDOS | Introduce ReDoS-vulnerable patterns | CWE-400 |
+| MISSINGAUTH | Remove authorization checks | CWE-862 |
+| LOGINJECT | Enable log injection | CWE-117 |
+| LDAPINJECT | Enable LDAP injection | CWE-74 |
+| FILEUPLOAD | Remove file upload validation | CWE-434 |
+| IDOR | Remove object-level authorization | CWE-639 |
+| CSRF_REMOVE | Remove CSRF token validation | CWE-352 |
+| WEAKPERM | Set overly permissive file permissions | CWE-732 |
 
 ## Project Structure
 
 ```
 SecMutBench/
 ├── data/
-│   ├── dataset.json           # Main benchmark (304 samples, 737 mutants)
+│   ├── dataset2.json          # Main benchmark (339 samples, 1,869 mutants)
+│   ├── dataset.json           # Original benchmark (117 samples, 289 mutants)
 │   └── splits/
-│       ├── easy.json          # 25 samples
-│       ├── medium.json        # 205 samples
-│       └── hard.json          # 74 samples
+│       ├── easy.json          # 136 samples
+│       ├── medium.json        # 101 samples
+│       └── hard.json          # 102 samples
 ├── operators/
-│   ├── security_operators.py  # 32 mutation operator implementations
-│   └── operator_registry.py   # Operator-to-CWE mappings (49 CWEs)
+│   ├── security_operators.py  # 25 active mutation operator implementations
+│   └── operator_registry.py   # Operator-to-CWE mappings
 ├── evaluation/
 │   ├── evaluate.py            # Main evaluation orchestrator
 │   ├── mutation_engine.py     # Mutant generation
@@ -206,7 +222,7 @@ SecMutBench/
 │   ├── prompts.py             # Prompt templates (including ablation)
 │   ├── llm_judge.py           # LLM-as-judge evaluation
 │   ├── version.py             # Version tracking for reproducibility
-│   └── mocks/                 # 15 mock objects for safe test execution
+│   └── mocks/                 # 12 mock objects for safe test execution
 │       ├── mock_database.py   # SQL injection testing
 │       ├── mock_subprocess.py # Command injection testing
 │       ├── mock_filesystem.py # Path traversal testing
@@ -218,11 +234,12 @@ SecMutBench/
 │   ├── dataset_builder.py     # Main dataset orchestrator
 │   ├── sample_generator.py    # Sample generation from templates
 │   ├── source_ingestion.py    # Multi-source data loading
+│   ├── source_handlers.py     # Source-specific handlers (CWEval, SecurityEval, etc.)
+│   ├── generate_variations.py # LLM variation generation pipeline
+│   ├── validate_dataset_quality.py   # Dataset quality validation
 │   ├── compute_mutant_validity.py    # Mutant validity analysis
 │   ├── compute_test_validity.py      # Test validity aggregation
-│   ├── evaluate_no_mocks.py          # Mock vs no-mock comparison
 │   ├── evaluate_reference_tests.py   # Reference test baseline
-│   ├── run_semgrep_baseline.py       # Semgrep static analysis
 │   └── sample_kills_for_audit.py     # Manual audit sampling
 ├── requirements.txt
 └── README.md

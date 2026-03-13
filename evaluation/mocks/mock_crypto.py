@@ -88,8 +88,26 @@ class MockCrypto:
         "pbkdf2",  # When used with strong hash
     ]
 
+    # Security-relevant attributes for observability tracking
+    SECURITY_ATTRS = {"last_algorithm", "weak_algorithm_used", "strong_algorithm_used", "algorithms_used"}
+
+    # Module-like attributes so `from hashlib import sha256` works correctly
+    __name__ = "hashlib"
+    __loader__ = None
+    __spec__ = None
+
     def __init__(self):
+        # Initialize security attribute access tracking
+        object.__setattr__(self, "_accessed_security_attrs", set())
         self.reset()
+
+    def __getattribute__(self, name):
+        """Track access to security-relevant attributes."""
+        value = object.__getattribute__(self, name)
+        if name in MockCrypto.SECURITY_ATTRS:
+            accessed = object.__getattribute__(self, "_accessed_security_attrs")
+            accessed.add(name)
+        return value
 
     def reset(self):
         """Reset all state."""
@@ -97,6 +115,10 @@ class MockCrypto:
         self.algorithms_used: List[str] = []
         self.weak_algorithm_used: bool = False
         self.strong_algorithm_used: bool = False
+
+    def reset_security_tracking(self):
+        """Reset security attribute access tracking."""
+        object.__setattr__(self, "_accessed_security_attrs", set())
 
     def _record_algorithm(self, algorithm: str):
         """Record algorithm usage and check weakness."""
@@ -179,8 +201,11 @@ class MockCrypto:
         dklen: Optional[int] = None
     ) -> bytes:
         """Mock hashlib.pbkdf2_hmac() - Key derivation function."""
-        self._record_algorithm(f"pbkdf2_{hash_name}")
-        # Check if using weak base algorithm
+        # H8 fix: Don't call _record_algorithm() which sets both flags
+        # Set the appropriate flag directly based on base hash algorithm
+        algo = f"pbkdf2_{hash_name}"
+        self.last_algorithm = algo.lower()
+        self.algorithms_used.append(algo.lower())
         if hash_name.lower() in ["md5", "sha1"]:
             self.weak_algorithm_used = True
         else:

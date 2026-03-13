@@ -1,5 +1,132 @@
 # SecMutBench Changelog
 
+## [2.8.0] - 2026-03-13
+
+### Summary
+Major dataset expansion from 117 to 339 samples via LLM-generated variations and CWEval integration. CWE coverage expanded from 15 to 30 types. Mutant count increased from 289 to 1,869 with new `mutant_category` and `source_type` fields. Added 25 mutation operators, complexity-based difficulty assignment, structural deduplication, and three judge skills for evaluation.
+
+---
+
+### Major Features
+
+#### Dataset Expansion via LLM Variations
+- **Files:** `scripts/generate_variations.py`, `data/dataset2.json`, `data/variations*.json`
+- Generated 258 LLM-based variations from 81 original samples using semantic-preserving code transformations
+- Each variation maintains the same CWE, entry point, and vulnerability pattern while varying code structure
+- Validated all variations for compilability (100%) and cross-contamination (0)
+- All 339 samples have unique entry points
+
+#### CWEval Integration
+- **Files:** `scripts/source_handlers.py`, `scripts/source_ingestion.py`, `scripts/sample_generator.py`
+- Added `CWEvalHandler` for ingesting CWEval benchmark samples
+- 16/26 CWEval samples pass vulnerability detection validation
+- CWEval contributed 3 new CWEs: CWE-326 (Inadequate Key Size), CWE-347 (Improper Verification of Cryptographic Signature), CWE-643 (XPath Injection)
+- Fixed duplicate ID generation by including `unsafe_variant` in hash
+
+#### New Fields: `source_type` and `mutant_category`
+- **Files:** `evaluation/mutation_engine.py`, `evaluation/metrics.py`, `evaluation/evaluate.py`
+- `source_type`: Tracks sample origin — `SecMutBench`, `CWEval`, `SecurityEval`, or `LLM_Variation`
+- `mutant_category`: Classifies mutants as `cwe_specific` (67%) or `generic` (33%)
+- Added `aggregate_by_source_type()` and `aggregate_by_mutant_category()` to metrics
+
+#### WEAKPERM Operator
+- **Files:** `operators/security_operators.py`, `operators/operator_registry.py`
+- New operator for CWE-732 (Incorrect Permission Assignment): mutates file permissions to overly permissive values (0o777, 0o666)
+- Replaces MISSINGAUTH for CWE-732 samples (was incorrectly classified)
+
+#### Judge Skills
+- **Files:** `.claude/commands/judge.md`, `.claude/commands/judge-security.md`, `.claude/commands/judge-quality.md`
+- `/judge`: Combined security relevance + test quality evaluation using Claude reasoning
+- `/judge-security`: Focused security relevance scoring with CWE attack vectors reference and mock environment docs
+- `/judge-quality`: Focused test quality scoring with weighted rubric (assertions, edge cases, best practices, mock usage)
+
+---
+
+### Quality Improvements
+
+#### Complexity-Based Difficulty Assignment
+- Replaced source-based difficulty with cyclomatic complexity + code metrics
+- Distribution: 136 easy / 101 medium / 102 hard
+- All 30 CWEs span at least 2 difficulty levels
+
+#### Structural Deduplication
+- Phase 1: Exact `secure_code` dedup (removed 8 identical samples)
+- Phase 2: Structural pattern dedup (max 2 per structural pattern)
+
+#### Operator Fixes
+- Extended 6 operators for SecCodePLT patterns: MISSINGAUTH, SSRF, OPENREDIRECT, NOCERTVALID, EVALINJECT, INFOEXPOSE
+- Fixed RVALID: empty for-loop body after removing if-block (now uses `pass`)
+- Fixed SUBDOMAIN_SPOOF: trailing newline regex for EOF
+- Fixed catastrophic regex backtracking in MISSINGAUTH (structural parsing instead of `[^:]+`)
+
+#### Reference Test Strengthening
+- CWE-22: Removed source-inspection fallback → outcome-only testing
+- CWE-306: Privileged-but-unauthenticated user isolates auth from authz
+- CWE-502: Added yaml.unsafe_load + eval() detection patterns
+- Added `variant_type` field to Mutant dataclass
+
+#### Security Audit Fixes
+- Cross-contamination: Set `allow_additional=False` in `_pregenerate_mutants()` → 0 contaminated mutants
+- CWE-77 shell=True: Added to INSECURE_PATTERNS in `_final_validation()`
+- Weak XSS assertion: `not has_raw_tag or has_escaped` → `not has_raw_tag`
+- sha244 typo → sha224 fix for CWE-327
+
+---
+
+### Dataset Statistics
+
+| Metric | v2.5.2 | v2.8.0 |
+|--------|--------|--------|
+| Total Samples | 104 | 339 |
+| CWE Types | 9 | 30 |
+| Mutation Operators | 32 | 25 (active) |
+| Pre-generated Mutants | 299 | 1,869 |
+| Avg Mutants/Sample | 2.9 | 5.5 |
+| Sources | 3 | 4 |
+| Compilability | 100% | 100% |
+| Cross-contamination | 0 | 0 |
+
+**By Source:**
+| Source | Count |
+|--------|-------|
+| SecMutBench (original) | 75 |
+| CWEval | 3 |
+| SecurityEval | 3 |
+| LLM_Variation | 258 |
+
+**Mutant Categories:**
+| Category | Count | Percentage |
+|----------|-------|------------|
+| cwe_specific | 1,252 | 67% |
+| generic | 617 | 33% |
+
+---
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `data/dataset2.json` | New expanded dataset (339 samples, 1,869 mutants) |
+| `data/splits/*.json` | Regenerated for v2.8.0 |
+| `evaluation/mutation_engine.py` | Added `mutant_category` field to Mutant dataclass |
+| `evaluation/metrics.py` | Added `aggregate_by_source_type()`, `aggregate_by_mutant_category()` |
+| `evaluation/evaluate.py` | WEAKPERM operator support, `mutant_category`/`source_type` propagation |
+| `evaluation/version.py` | Bumped to v2.8.0 |
+| `operators/security_operators.py` | WEAKPERM operator, operator fixes |
+| `operators/operator_registry.py` | Updated CWE-to-operator mappings |
+| `scripts/generate_variations.py` | New LLM variation generator |
+| `scripts/source_handlers.py` | CWEvalHandler |
+| `scripts/sample_generator.py` | CWEval support, quality fixes |
+| `scripts/dataset_builder.py` | Structural dedup, complexity difficulty |
+| `scripts/validate_dataset_quality.py` | New validation script |
+| `.claude/commands/judge*.md` | Three judge skills |
+| `pyproject.toml` | Version bump to 2.8.0 |
+| `croissant.json` | Updated metadata |
+| `DATASET_CARD.md` | Updated statistics |
+| `datasheet.md` | Updated statistics |
+
+---
+
 ## [2.5.2] - 2026-03-07
 
 ### Summary

@@ -10,9 +10,9 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
 # Core versions
-__version__ = "2.5.0"
-__benchmark_version__ = "v2.5"  # Dataset version (24 viable CWEs, 32 operators, 49 CWE mappings)
-__schema_version__ = "2.1"      # Sample schema version (added mock_security_access)
+__version__ = "2.8.0"
+__benchmark_version__ = "v2.8.0"  # Dataset version (339 samples, 30 CWEs, mutant_category, source_type)
+__schema_version__ = "2.2"        # Added mutant_category, source_type
 
 # Minimum required versions of key dependencies
 REQUIRED_VERSIONS = {

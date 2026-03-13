@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# SecMutBench LLM Evaluation Runner (v2.5.1)
+# SecMutBench LLM Evaluation Runner (v2.8.0)
 # =============================================================================
 # This script runs LLM baseline evaluation:
 # 1. Runs LLM baseline evaluation with specified models (Ollama or API)
@@ -41,7 +41,7 @@ TEST_MODE=${TEST_MODE:-false}
 MODELS=${MODELS:-"qwen2.5-coder:14b-instruct deepseek-coder-v2:latest"}
 MODEL_PROVIDER=${MODEL_PROVIDER:-"ollama"}
 JUDGE_PROVIDER=${JUDGE_PROVIDER:-"none"}
-DATASET_PATH=${DATASET_PATH:-"data/dataset.json"}
+DATASET_PATH=${DATASET_PATH:-"data/dataset2.json"}
 SHUFFLE=${SHUFFLE:-false}
 SEED=${SEED:-2026}
 RUN_STATIC_ANALYSIS=${RUN_STATIC_ANALYSIS:-false}
@@ -215,15 +215,15 @@ for MODEL in $MODELS; do
 
     if [ "$JUDGE_PROVIDER" = "both" ]; then
         python baselines/run_llm_baselines.py --models "$MODEL" --provider "$MODEL_PROVIDER" \
-            --use-judge --judge-provider openai $MAX_FLAG $SHUFFLE_FLAG $PROMPT_FLAG $SKIP_INVALID_FLAG $BATCH_FLAG $BATCH_JUDGE_FLAG --output results
+            --dataset "$DATASET_PATH" --use-judge --judge-provider openai $MAX_FLAG $SHUFFLE_FLAG $PROMPT_FLAG $SKIP_INVALID_FLAG $BATCH_FLAG $BATCH_JUDGE_FLAG --output results
         python baselines/run_llm_baselines.py --models "$MODEL" --provider "$MODEL_PROVIDER" \
-            --use-judge --judge-provider anthropic $MAX_FLAG $SHUFFLE_FLAG $PROMPT_FLAG $SKIP_INVALID_FLAG $BATCH_FLAG $BATCH_JUDGE_FLAG --output results
+            --dataset "$DATASET_PATH" --use-judge --judge-provider anthropic $MAX_FLAG $SHUFFLE_FLAG $PROMPT_FLAG $SKIP_INVALID_FLAG $BATCH_FLAG $BATCH_JUDGE_FLAG --output results
     elif [ "$JUDGE_PROVIDER" = "none" ]; then
         python baselines/run_llm_baselines.py --models "$MODEL" --provider "$MODEL_PROVIDER" \
-            $MAX_FLAG $SHUFFLE_FLAG $PROMPT_FLAG $SKIP_INVALID_FLAG $BATCH_FLAG --output results
+            --dataset "$DATASET_PATH" $MAX_FLAG $SHUFFLE_FLAG $PROMPT_FLAG $SKIP_INVALID_FLAG $BATCH_FLAG --output results
     else
         python baselines/run_llm_baselines.py --models "$MODEL" --provider "$MODEL_PROVIDER" \
-            --use-judge --judge-provider "$JUDGE_PROVIDER" $MAX_FLAG $SHUFFLE_FLAG $PROMPT_FLAG $SKIP_INVALID_FLAG $BATCH_FLAG $BATCH_JUDGE_FLAG --output results
+            --dataset "$DATASET_PATH" --use-judge --judge-provider "$JUDGE_PROVIDER" $MAX_FLAG $SHUFFLE_FLAG $PROMPT_FLAG $SKIP_INVALID_FLAG $BATCH_FLAG $BATCH_JUDGE_FLAG --output results
     fi
 done
 
@@ -234,7 +234,7 @@ echo ""
 # =============================================================================
 if [ "$RUN_STATIC_ANALYSIS" = true ]; then
     echo -e "${YELLOW}[4/5] Running static analysis...${NC}"
-    python baselines/run_static_analysis.py --tool both $MAX_FLAG
+    python baselines/run_static_analysis.py --dataset "$DATASET_PATH" --tool both --verbose
     echo ""
 else
     echo -e "${YELLOW}[4/5] Skipping static analysis (use --static-analysis)${NC}"
@@ -246,14 +246,28 @@ fi
 echo -e "${YELLOW}[5/5] Results summary...${NC}"
 echo ""
 
-LATEST_RESULTS=$(ls -t results/baseline_results_*.json 2>/dev/null | head -1)
+# Find all recent results across model subdirectories
+ALL_RESULTS=$(find results -name "baseline_results_*.json" -newer results 2>/dev/null | sort)
 
-if [ -n "$LATEST_RESULTS" ]; then
-    echo -e "${GREEN}Results: $LATEST_RESULTS${NC}"
+if [ -z "$ALL_RESULTS" ]; then
+    # Fallback: find most recent across all subdirs
+    ALL_RESULTS=$(find results -name "baseline_results_*.json" 2>/dev/null | sort -t_ -k3 -r)
+fi
+
+if [ -n "$ALL_RESULTS" ]; then
+    echo -e "${GREEN}Results directories:${NC}"
+    ls -d results/*/ 2>/dev/null | while read dir; do
+        count=$(ls "$dir"baseline_results_*.json 2>/dev/null | wc -l)
+        [ "$count" -gt 0 ] && echo -e "  ${GREEN}✓${NC} $dir ($count files)"
+    done
     echo ""
-    python -c "
+
+    # Summarize each results file
+    for RESULT_FILE in $ALL_RESULTS; do
+        echo -e "${GREEN}$RESULT_FILE${NC}"
+        python -c "
 import json
-with open('$LATEST_RESULTS') as f:
+with open('$RESULT_FILE') as f:
     data = json.load(f)
 print('='*60)
 for result in data['results']:
@@ -262,10 +276,21 @@ for result in data['results']:
     sms = result.get('avg_security_mutation_score')
     if sms: print(f\"  Security MS: {sms:.1%}\")
     print(f\"  Vuln Detection: {result['avg_vuln_detection']:.1%}\")
+    # Kill breakdown from detailed results
+    details = result.get('detailed_results', [])
+    if details:
+        all_mutants = [m for d in details for m in d.get('mutant_details', [])]
+        killed = [m for m in all_mutants if m.get('killed')]
+        sem = sum(1 for m in killed if m.get('kill_type') == 'semantic')
+        inc = sum(1 for m in killed if m.get('kill_type') == 'assertion_incidental')
+        crash = sum(1 for m in killed if m.get('kill_type') == 'crash')
+        print(f\"  Kills: {len(killed)}/{len(all_mutants)} (Semantic:{sem} Incidental:{inc} Crash:{crash})\")
     print(f\"  Errors: {result['errors']}, Time: {result['evaluation_time']:.1f}s\")
     print()
 print('='*60)
 "
+        echo ""
+    done
 fi
 
 echo ""

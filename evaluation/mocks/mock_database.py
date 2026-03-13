@@ -5,18 +5,30 @@ Provides a mock database for testing SQL-related code and detecting SQL injectio
 """
 
 import os
+import re
 from typing import Dict, List, Any, Optional
 
 
 class MockDatabase:
     """Mock database for testing SQL-related code."""
 
+    # Security-relevant attributes for observability tracking
+    SECURITY_ATTRS = {"last_query", "last_params", "query_count"}
+
     def __init__(self):
+        # Initialize security attribute access tracking
+        object.__setattr__(self, "_accessed_security_attrs", set())
         self._default_tables = {
             "users": [
-                {"id": 1, "name": "alice", "email": "alice@example.com", "password_hash": "hash_alice"},
-                {"id": 2, "name": "bob", "email": "bob@example.com", "password_hash": "hash_bob"},
-                {"id": 3, "name": "charlie", "email": "charlie@example.com", "password_hash": "hash_charlie"},
+                # Both password (for insecure code) and password_hash (for secure bcrypt code)
+                # password = plaintext value that insecure code compares against
+                # password_hash = bcrypt hash for secure code (starts with $2b$)
+                {"id": 1, "name": "alice", "username": "alice", "email": "alice@example.com",
+                 "password": "test_password_alice", "password_hash": "$2b$12$LQv3c1yqBWVHxkd0LHAkCOtest_alice_hash"},
+                {"id": 2, "name": "bob", "username": "bob", "email": "bob@example.com",
+                 "password": "test_password_bob", "password_hash": "$2b$12$LQv3c1yqBWVHxkd0LHAkCOtest_bob_hash"},
+                {"id": 3, "name": "charlie", "username": "charlie", "email": "charlie@example.com",
+                 "password": "test_password_charlie", "password_hash": "$2b$12$LQv3c1yqBWVHxkd0LHAkCOtest_charlie_hash"},
             ],
             "passwords": [
                 {"user_id": 1, "hash": "hash1"},
@@ -40,6 +52,14 @@ class MockDatabase:
         self._last_results = []
         self._committed = False
 
+    def __getattribute__(self, name):
+        """Track access to security-relevant attributes."""
+        value = object.__getattribute__(self, name)
+        if name in MockDatabase.SECURITY_ATTRS:
+            accessed = object.__getattribute__(self, "_accessed_security_attrs")
+            accessed.add(name)
+        return value
+
     def reset(self):
         """Reset database to initial state."""
         self.tables = {k: [dict(row) for row in v] for k, v in self._default_tables.items()}
@@ -48,6 +68,10 @@ class MockDatabase:
         self.query_count = 0
         self._last_results = []
         self._committed = False
+
+    def reset_security_tracking(self):
+        """Reset security attribute access tracking."""
+        object.__setattr__(self, "_accessed_security_attrs", set())
 
     def add_row(self, table: str, row: Dict):
         """Add a row to a table."""
@@ -87,6 +111,17 @@ class MockDatabase:
         """Get a single row matching a condition."""
         for row in self.tables.get(table, []):
             if row.get(match_col) == match_val:
+                return dict(row)
+        return None
+
+    def get_user(self, username: str) -> Optional[Dict]:
+        """Get user by username - convenience method for auth tests.
+
+        Used by CWE-287 authentication templates.
+        Returns user dict with both 'password' and 'password_hash' fields.
+        """
+        for row in self.tables.get("users", []):
+            if row.get("username") == username or row.get("name") == username:
                 return dict(row)
         return None
 
@@ -215,16 +250,28 @@ class MockDatabase:
                     pass
             return filtered
 
-        # Handle WHERE with parameterized queries
+        # H7 fix: Parse column names from WHERE clause and match positionally
         if params and "WHERE" in query_upper:
             filtered = []
+            # Extract column names from WHERE clause (col = ? pattern)
+            where_part = query_upper.split("WHERE", 1)[1].split("ORDER")[0].split("LIMIT")[0]
+            where_cols = re.findall(r'(\w+)\s*=\s*\?', where_part)
             for row in rows:
-                for param in params:
-                    for col, val in row.items():
-                        if str(val) == str(param):
-                            if row not in filtered:
-                                filtered.append(row)
+                match = True
+                for i, col_upper in enumerate(where_cols):
+                    if i >= len(params):
+                        break
+                    # Find matching column (case-insensitive)
+                    matched_col = None
+                    for rc in row:
+                        if rc.upper() == col_upper:
+                            matched_col = rc
                             break
+                    if matched_col is None or str(row[matched_col]) != str(params[i]):
+                        match = False
+                        break
+                if match and row not in filtered:
+                    filtered.append(row)
             return filtered
 
         return rows[:1] if rows else []

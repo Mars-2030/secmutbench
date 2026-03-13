@@ -225,9 +225,12 @@ builtins.fork = lambda: None  # Block
 # Connection mock for CWE-798
 builtins.connect = lambda **kwargs: {"connected": True, "password": kwargs.get("password")}
 
-# Decorator stubs
+# Decorator stubs — H5 fix: Set flags so RMAUTH mutants removing decorators are detectable
 builtins.csrf_exempt = lambda f: f
-builtins.login_required = lambda f: f
+def _login_required(f):
+    f._requires_auth = True
+    return f
+builtins.login_required = _login_required
 
 # pytest - needed for pytest.raises() in generated tests
 builtins.pytest = pytest
@@ -402,6 +405,13 @@ class _ChainableMock:
         return f"<ChainableMock({self._name})>"
 
     def __bool__(self):
+        # Return False only for auth/verification calls to prevent auto-passing
+        # auth checks like `if bcrypt.verify(...)`. For everything else, return True
+        # so secure code paths that check mocked library return values work correctly.
+        _auth_patterns = ("verify", "check_password", "authenticate", "validate_token")
+        name = object.__getattribute__(self, "_name").lower()
+        if any(p in name for p in _auth_patterns):
+            return False
         return True
 
     def __iter__(self):
@@ -428,12 +438,215 @@ _mock_flask_login = _MockModule("flask_login")
 _mock_werkzeug = _MockModule("werkzeug")
 _mock_jinja2 = _MockModule("jinja2")
 _mock_mako = _MockModule("mako")
-_mock_lxml = _MockModule("lxml")
 _mock_defusedxml = _MockModule("defusedxml")
+
+# ── Enhanced lxml mock for CWE-643 XPath parameterization tracking ──
+class _MockLXMLElement:
+    """Mock lxml Element that tracks XPath parameterization."""
+    def __init__(self, tracker, tag='root'):
+        self._tracker = tracker
+        self.tag = tag
+        self.text = ''
+        self.tail = None
+        self.attrib = {}
+
+    def xpath(self, query, **variables):
+        """Track whether XPath was called with parameterized variables."""
+        if variables:
+            self._tracker.parameterized = True
+        else:
+            self._tracker.unparameterized = True
+        return []
+
+    def find(self, path):
+        return _MockLXMLElement(self._tracker, 'child')
+
+    def findall(self, path):
+        return []
+
+    def findtext(self, path, default=None):
+        return default or ''
+
+    def __len__(self):
+        return 0
+
+    def __iter__(self):
+        return iter([])
+
+    def __getitem__(self, idx):
+        return _MockLXMLElement(self._tracker, 'child')
+
+    def __bool__(self):
+        return True
+
+    def __getattr__(self, name):
+        return _ChainableMock("lxml.Element." + name)
+
+
+class _MockLXMLEtree:
+    """Mock lxml.etree module with XPath parameterization tracking."""
+    __name__ = "lxml.etree"
+
+    def __init__(self):
+        self.parameterized = False
+        self.unparameterized = False
+        self.safe_parser_used = False
+        self.unsafe_parser_used = False
+
+    def fromstring(self, xml_string, parser=None):
+        self.parameterized = False
+        self.unparameterized = False
+        if parser is not None:
+            self.safe_parser_used = True
+        else:
+            self.unsafe_parser_used = True
+        return _MockLXMLElement(self)
+
+    def parse(self, source, parser=None):
+        self.parameterized = False
+        self.unparameterized = False
+        if parser is not None:
+            self.safe_parser_used = True
+        else:
+            self.unsafe_parser_used = True
+        return _MockLXMLElement(self)
+
+    def tostring(self, element, **kwargs):
+        return b'<root/>'
+
+    def XPath(self, query):
+        return lambda *args, **kwargs: []
+
+    def reset(self):
+        self.parameterized = False
+        self.unparameterized = False
+        self.safe_parser_used = False
+        self.unsafe_parser_used = False
+
+    def __getattr__(self, name):
+        return _ChainableMock("lxml.etree." + name)
+
+
+_mock_lxml_etree = _MockLXMLEtree()
+
+
+class _MockLXMLModule:
+    """Mock top-level lxml module."""
+    __name__ = "lxml"
+
+    def __init__(self, etree_mock):
+        self.etree = etree_mock
+
+    def __getattr__(self, name):
+        return _ChainableMock("lxml." + name)
+
+
+_mock_lxml = _MockLXMLModule(_mock_lxml_etree)
+
+# ── Enhanced RSA mock for CWE-326 key size tracking ──
+class _MockRSAKey:
+    """Mock RSA key that tracks key size."""
+    def __init__(self, bits):
+        self.key_size = bits
+        self._bits = bits
+
+    def export_key(self, format="PEM", pkcs=1, passphrase=None):
+        return b"-----BEGIN RSA PRIVATE KEY-----\\nMOCK_KEY\\n-----END RSA PRIVATE KEY-----"
+
+    def publickey(self):
+        return self
+
+    def __repr__(self):
+        return "<MockRSAKey(bits=" + str(self._bits) + ")>"
+
+    def __getattr__(self, name):
+        return _ChainableMock("RSAKey." + name)
+
+
+class _MockRSAModule:
+    """Mock Crypto.PublicKey.RSA that tracks key generation size."""
+    __name__ = "Crypto.PublicKey.RSA"
+    __loader__ = None
+    __spec__ = None
+
+    def __init__(self):
+        self.last_key_size = None
+        self.all_key_sizes = []
+
+    def generate(self, bits, *args, **kwargs):
+        self.last_key_size = bits
+        self.all_key_sizes.append(bits)
+        return _MockRSAKey(bits)
+
+    def import_key(self, data, passphrase=None):
+        return _MockRSAKey(2048)
+
+    def construct(self, rsa_components):
+        return _MockRSAKey(2048)
+
+    def reset(self):
+        self.last_key_size = None
+        self.all_key_sizes = []
+
+    def __getattr__(self, name):
+        return _ChainableMock("RSA." + name)
+
+
+_mock_rsa = _MockRSAModule()
+
+
+class _MockCryptoPublicKey:
+    """Mock Crypto.PublicKey module with RSA tracking."""
+    __name__ = "Crypto.PublicKey"
+    __loader__ = None
+    __spec__ = None
+    RSA = _mock_rsa
+
+    def __getattr__(self, name):
+        return _ChainableMock("Crypto.PublicKey." + name)
+
+# ── Monkey-patch xml.etree.ElementTree for CWE-611 tracking ──
+# Directly patch fromstring/parse on the real module so all import patterns are caught.
+import xml.etree.ElementTree as _real_xml_ET
+
+
+class _XMLUsageTracker:
+    """Tracks whether standard xml.etree.ElementTree functions were called."""
+    def __init__(self):
+        self.stdlib_xml_used = False
+    def reset(self):
+        self.stdlib_xml_used = False
+
+
+_xml_tracker = _XMLUsageTracker()
+_orig_xml_fromstring = _real_xml_ET.fromstring
+_orig_xml_parse = _real_xml_ET.parse
+
+
+def _tracking_xml_fromstring(text, parser=None):
+    _xml_tracker.stdlib_xml_used = True
+    return _orig_xml_fromstring(text, parser) if parser else _orig_xml_fromstring(text)
+
+
+def _tracking_xml_parse(source, parser=None):
+    _xml_tracker.stdlib_xml_used = True
+    return _orig_xml_parse(source, parser) if parser else _orig_xml_parse(source)
+
+
+_real_xml_ET.fromstring = _tracking_xml_fromstring
+_real_xml_ET.parse = _tracking_xml_parse
+
+# Inject enhanced mocks into builtins (defined above, after class definitions)
+builtins.mock_rsa = _mock_rsa
+builtins.mock_lxml_etree = _mock_lxml_etree
+builtins.mock_stdlib_xml = _xml_tracker
 
 # Core mocks
 sys.modules["subprocess"] = _mock_subprocess
 sys.modules["requests"] = _mock_http
+# Ensure hashlib mock replaces any cached real hashlib (handles from-import pattern)
+if "hashlib" in sys.modules:
+    del sys.modules["hashlib"]
 sys.modules["hashlib"] = _mock_crypto
 sys.modules["pickle"] = _mock_pickle
 sys.modules["yaml"] = _mock_yaml
@@ -458,7 +671,14 @@ sys.modules["cryptography.hazmat.backends"] = _mock_cryptography
 sys.modules["Crypto"] = _mock_crypto_cipher
 sys.modules["Crypto.Cipher"] = _mock_crypto_cipher
 sys.modules["Crypto.Cipher.AES"] = _mock_crypto_cipher
+sys.modules["Crypto.Cipher.DES"] = _mock_crypto_cipher
 sys.modules["Crypto.Hash"] = _mock_crypto_cipher
+sys.modules["Crypto.PublicKey"] = _MockCryptoPublicKey()
+sys.modules["Crypto.PublicKey.RSA"] = _mock_rsa
+sys.modules["Crypto.PublicKey.DSA"] = _mock_crypto_cipher
+sys.modules["Crypto.Util"] = _mock_crypto_cipher
+sys.modules["Crypto.Util.Padding"] = _mock_crypto_cipher
+sys.modules["Crypto.Random"] = _mock_crypto_cipher
 
 # Password hashing libraries
 sys.modules["passlib"] = _mock_passlib
@@ -506,7 +726,7 @@ sys.modules["mako.template"] = _mock_mako
 
 # XML libraries (safe alternatives)
 sys.modules["lxml"] = _mock_lxml
-sys.modules["lxml.etree"] = _mock_lxml
+sys.modules["lxml.etree"] = _mock_lxml_etree
 sys.modules["defusedxml"] = _mock_defusedxml
 sys.modules["defusedxml.ElementTree"] = _mock_defusedxml
 
@@ -522,6 +742,20 @@ sys.modules["smtplib"] = _MockModule("smtplib")
 sys.modules["boto3"] = _MockModule("boto3")
 sys.modules["botocore"] = _MockModule("botocore")
 sys.modules["botocore.exceptions"] = _MockModule("botocore.exceptions")
+
+# Patch importlib.import_module to prevent mock bypass
+# Without this, code like `importlib.import_module("subprocess")` would
+# bypass sys.modules patching and load the real module.
+import importlib as _real_importlib
+_original_import_module = _real_importlib.import_module
+
+def _safe_import_module(name, package=None):
+    """Import module hook that returns mocked modules for security-sensitive libraries."""
+    if name in sys.modules:
+        return sys.modules[name]
+    return _original_import_module(name, package)
+
+_real_importlib.import_module = _safe_import_module
 
 
 # ============================================================
@@ -543,6 +777,7 @@ _all_mocks = {
     "eval": _mock_eval,
     "random": _mock_random,
     "secrets": _mock_secrets,
+    "marshal": _mock_marshal,
 }
 
 

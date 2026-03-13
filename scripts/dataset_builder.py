@@ -25,7 +25,10 @@ from typing import Dict, List, Any, Optional, Tuple
 
 # Import from new modular components
 from source_ingestion import SourceManager, CWE_REGISTRY, normalize_cwe
-from sample_generator import SampleGenerator, Sample, generate_id
+from sample_generator import (
+    SampleGenerator, Sample, generate_id,
+    get_fallback_audit_log, clear_fallback_audit_log
+)
 
 # Import existing utilities
 try:
@@ -87,6 +90,12 @@ except ImportError:
     TEST_RUNNER_AVAILABLE = False
     print("Warning: test_runner not available, VD validation will be skipped")
 
+# Import version
+try:
+    from evaluation.version import __version__ as SECMUTBENCH_VERSION
+except ImportError:
+    SECMUTBENCH_VERSION = "2.6.1"
+
 
 # =============================================================================
 # Configuration
@@ -94,23 +103,98 @@ except ImportError:
 
 # Distribution weights by CWE (relative weights, not absolute counts)
 # Higher weight = more samples allocated during distribution balancing
+# Includes ALL CWEs with SecMutBench templates to ensure they are selected
+# CWEs excluded from dataset (with justification)
+EXCLUDED_CWES = {
+    "CWE-78",  # Removed: input validation prevents shell=True exploitation (0% kill rate)
+}
+
+# Sample IDs excluded from dataset (with justification)
+EXCLUDED_SAMPLE_IDS = {
+    "4766d397da50",  # CWE-306: undefined is_authenticated() causes NameError (0/13 mutants killed)
+    "0563bd4bcf06",  # C5: CWE-327 SecCodePLT encrypt_password() wrong arg types (ValueError on secure+mutant)
+    "3ea75447ddcf",  # C5: CWE-327 SecCodePLT encrypt_password() wrong arg types (ValueError on secure+mutant)
+}
+
 DEFAULT_CWE_WEIGHTS = {
-    "CWE-89": 15,   # SQL Injection - most common
-    "CWE-79": 15,   # XSS - most common
-    "CWE-78": 12,   # Command Injection
+    # Tier 1: High priority - most common/critical (weight 10-15)
+    "CWE-89": 15,   # SQL Injection
+    "CWE-79": 15,   # XSS
+    "CWE-77": 12,   # Command Injection
     "CWE-22": 12,   # Path Traversal
     "CWE-20": 10,   # Input Validation
-    "CWE-287": 8,   # Authentication
+    "CWE-74": 10,   # Injection (generic)
+
+    # Tier 2: Important security issues (weight 6-8)
+    "CWE-287": 8,   # Improper Authentication
     "CWE-798": 8,   # Hardcoded Credentials
-    "CWE-502": 8,   # Deserialization
-    "CWE-327": 6,   # Weak Crypto
+    "CWE-502": 8,   # Insecure Deserialization
+    "CWE-306": 8,   # Missing Authentication
+    "CWE-327": 6,   # Weak Cryptography
+    "CWE-328": 6,   # Weak Hash
     "CWE-352": 6,   # CSRF
-    "CWE-611": 5,   # XXE
-    "CWE-918": 5,   # SSRF
-    "CWE-306": 5,   # Missing Auth
-    "CWE-94": 4,    # Code Injection
-    "CWE-319": 3,   # Cleartext
-    "CWE-295": 3,   # Certificate
+    "CWE-611": 6,   # XXE
+    "CWE-918": 6,   # SSRF
+    "CWE-94": 6,    # Code Injection
+    "CWE-95": 6,    # Eval Injection
+
+    # Tier 3: Additional security concerns (weight 4-5)
+    "CWE-295": 5,   # Certificate Validation
+    "CWE-319": 5,   # Cleartext Transmission
+    "CWE-312": 5,   # Cleartext Storage
+    "CWE-338": 5,   # Weak PRNG
+    "CWE-434": 5,   # Unrestricted Upload
+    "CWE-601": 5,   # Open Redirect
+    "CWE-639": 5,   # IDOR
+    "CWE-862": 5,   # Missing Authorization
+    "CWE-863": 5,   # Incorrect Authorization
+    "CWE-942": 5,   # Permissive CORS
+    "CWE-1336": 5,  # SSTI
+
+    # Tier 4: Specialized CWEs (weight 3-4)
+    "CWE-116": 4,   # Improper Output Encoding
+    "CWE-200": 4,   # Information Exposure
+    "CWE-209": 4,   # Error Message Exposure
+    "CWE-269": 4,   # Privilege Management
+    "CWE-276": 4,   # Incorrect Permissions
+    "CWE-281": 4,   # Improper Permissions
+    "CWE-284": 4,   # Access Control
+    "CWE-347": 4,   # Crypto Signature
+    "CWE-362": 4,   # Race Condition
+    "CWE-367": 4,   # TOCTOU
+    "CWE-400": 4,   # Resource Exhaustion
+    "CWE-522": 4,   # Protected Credentials
+    "CWE-732": 4,   # Permission Assignment
+    "CWE-770": 4,   # Resource Limits
+    "CWE-915": 4,   # Mass Assignment
+    "CWE-1333": 4,  # ReDoS
+
+    # Tier 5: Path traversal variants and misc (weight 2-3)
+    "CWE-16": 3,    # Configuration
+    "CWE-24": 3,    # Path Traversal ../
+    "CWE-32": 3,    # Path Traversal ...
+    "CWE-36": 3,    # Absolute Path Traversal
+    "CWE-37": 3,    # Path Traversal /absolute
+    "CWE-39": 3,    # Path Traversal Windows
+    "CWE-40": 3,    # Path Traversal UNC
+    "CWE-73": 3,    # External Control of File Name
+
+    # Tier 6: Additional CWEs from operator registry (weight 2)
+    "CWE-90": 2,    # LDAP Injection
+    "CWE-113": 2,   # HTTP Response Splitting
+    "CWE-117": 2,   # Log Injection
+    "CWE-215": 2,   # Debug Info Exposure
+    "CWE-259": 2,   # Hardcoded Password
+    "CWE-297": 2,   # Certificate Host Mismatch
+    "CWE-311": 2,   # Missing Encryption
+    "CWE-326": 2,   # Inadequate Encryption Strength
+    "CWE-330": 2,   # Insufficiently Random Values
+    "CWE-331": 2,   # Insufficient Entropy
+    "CWE-346": 2,   # Origin Validation Error
+    "CWE-521": 2,   # Weak Password Requirements
+    "CWE-643": 2,   # XPath Injection
+    "CWE-776": 2,   # Recursive Entity References (XML Bomb)
+    "CWE-1004": 2,  # Sensitive Cookie Without HttpOnly
 }
 
 
@@ -209,13 +293,79 @@ class DatasetBuilder:
         self.base_dir = Path(__file__).parent.parent
         self.data_dir = self.base_dir / "data"
 
+    def _load_variations(self, variations_file: str) -> List[Sample]:
+        """
+        Load LLM-generated variations from JSON file.
+
+        Converts variation dicts to Sample objects with generated tests.
+
+        Args:
+            variations_file: Path to variations JSON file
+
+        Returns:
+            List of Sample objects from variations
+        """
+        from sample_generator import generate_functional_test, generate_security_test
+
+        variations_path = Path(variations_file)
+        if not variations_path.exists():
+            print(f"  Warning: Variations file not found: {variations_file}")
+            return []
+
+        with open(variations_path) as f:
+            data = json.load(f)
+
+        variations = data.get("variations", [])
+        samples = []
+
+        for var in variations:
+            cwe = var.get("cwe", "")
+            entry_point = var.get("entry_point", "")
+            secure_code = var.get("secure_code", "")
+            insecure_code = var.get("insecure_code", "")
+            prompt = var.get("prompt", "")
+            difficulty = var.get("difficulty", "medium")
+
+            if not all([cwe, entry_point, secure_code, insecure_code]):
+                continue
+
+            # Generate tests for the variation
+            func_tests = generate_functional_test(entry_point, cwe, secure_code)
+            sec_tests = generate_security_test(entry_point, cwe, secure_code)
+
+            # Get CWE name and operators
+            cwe_info = CWE_REGISTRY.get(cwe, {})
+            cwe_name = cwe_info.get("name", cwe)
+            operators = cwe_info.get("operators", [])
+
+            sample = Sample(
+                id=var.get("id", generate_id(f"llm_var_{cwe}_{entry_point}")),
+                cwe=cwe,
+                cwe_name=cwe_name,
+                difficulty=difficulty,
+                prompt=prompt,
+                entry_point=entry_point,
+                insecure_code=insecure_code,
+                secure_code=secure_code,
+                functional_tests=func_tests,
+                security_tests=sec_tests,
+                mutation_operators=operators,
+                source="LLM_Variation",
+                original_id=var.get("source_sample_id", "")
+            )
+            samples.append(sample)
+
+        return samples
+
     def build(self,
               distribution: Optional[Dict[str, int]] = None,
               apply_contamination_prevention: bool = True,
               validate: bool = True,
               deep_validate: bool = False,
-              min_samples_per_cwe: int = 5,
-              skip_vd_validation: bool = False) -> List[Sample]:
+              min_samples_per_cwe: int = 3,
+              skip_vd_validation: bool = False,
+              variations_file: Optional[str] = None,
+              verbose_drop: bool = False) -> List[Sample]:
         """
         Build the complete dataset.
 
@@ -224,21 +374,46 @@ class DatasetBuilder:
             apply_contamination_prevention: Whether to apply perturbation
             validate: Whether to validate samples
             deep_validate: Whether to run comprehensive validation (runtime tests, Bandit)
-            min_samples_per_cwe: Minimum samples per CWE to include
+            min_samples_per_cwe: Minimum samples per CWE to include (default: 3)
             skip_vd_validation: Skip VD validation (security tests pass on secure, fail on insecure)
+            variations_file: Path to LLM-generated variations JSON file
+            verbose_drop: Print detailed CWE drop reasons during filtering
 
         Returns:
             List of validated samples
         """
         print(f"\n{'='*60}")
-        print(f"SecMutBench Dataset Builder")
+        print(f"SecMutBench Dataset Builder v{SECMUTBENCH_VERSION}")
         print(f"Target: {self.target_samples} samples")
         print(f"{'='*60}\n")
+
+        # Clear fallback audit log for fresh run
+        clear_fallback_audit_log()
 
         # Step 1: Generate all samples from all sources
         print("Step 1: Generating samples from all sources...")
         all_samples = self.generator.generate_all(include_external=True)
         print(f"  Total raw samples: {len(all_samples)}")
+
+        # Step 1b: Load LLM-generated variations if provided
+        if variations_file:
+            print(f"\nStep 1b: Loading LLM variations from {variations_file}...")
+            variations = self._load_variations(variations_file)
+            all_samples.extend(variations)
+            print(f"  Added {len(variations)} variations, total: {len(all_samples)}")
+
+        # Step 1.5a: Apply exclusions (CWEs and sample IDs)
+        before_excl = len(all_samples)
+        all_samples = [s for s in all_samples
+                       if s.cwe not in EXCLUDED_CWES and s.id not in EXCLUDED_SAMPLE_IDS]
+        excl_count = before_excl - len(all_samples)
+        if excl_count > 0:
+            print(f"  Excluded {excl_count} samples (blocked CWEs/IDs)")
+
+        # Step 1.5b: Structural deduplication
+        print("\nStep 1.5: Structural deduplication...")
+        all_samples = self._structural_dedup(all_samples, max_per_pattern=2)
+        print(f"  After dedup: {len(all_samples)} samples")
 
         # Step 2: Select samples according to distribution
         print("\nStep 2: Selecting samples for balanced distribution...")
@@ -294,7 +469,9 @@ class DatasetBuilder:
 
         # Step 5: Filter to CWEs with operators and sufficient samples
         print(f"\nStep 5: Filtering to CWEs with operators and {min_samples_per_cwe}+ samples...")
-        filtered, filter_stats = self._filter_to_usable_cwes(selected, min_samples=min_samples_per_cwe)
+        filtered, filter_stats = self._filter_to_usable_cwes(
+            selected, min_samples=min_samples_per_cwe, verbose=verbose_drop
+        )
         print(f"  Before: {len(selected)} samples across {filter_stats['cwes_before']} CWEs")
         print(f"  After: {len(filtered)} samples across {filter_stats['cwes_after']} CWEs")
         if filter_stats['removed_cwes']:
@@ -332,6 +509,19 @@ class DatasetBuilder:
             print(f"  Dropped (VD both fail - test crashes): {val_stats['dropped']['vd_both_fail']}")
         if val_stats['dropped'].get('vd_inverted', 0) > 0:
             print(f"  Dropped (VD inverted - secure fails): {val_stats['dropped']['vd_inverted']}")
+
+        # Print VD diagnostic breakdown if available
+        vd_diag = val_stats.get('vd_diagnostics', {})
+        if vd_diag:
+            print("\n  VD Failure Diagnostics (by CWE|Source|Error):")
+            for drop_type in ['vd_both_fail', 'vd_both_pass', 'vd_inverted']:
+                if drop_type in vd_diag:
+                    print(f"    {drop_type}:")
+                    # Sort by count descending, show top 10
+                    sorted_items = sorted(vd_diag[drop_type].items(), key=lambda x: -x[1])[:10]
+                    for key, count in sorted_items:
+                        print(f"      {count:4d}x {key}")
+
         fixed = validated
 
         # Step 7.5: Pre-generate mutants for each sample
@@ -355,7 +545,8 @@ class DatasetBuilder:
         return fixed
 
     def _filter_to_usable_cwes(self, samples: List[Sample],
-                               min_samples: int = 5) -> Tuple[List[Sample], Dict]:
+                               min_samples: int = 3,
+                               verbose: bool = False) -> Tuple[List[Sample], Dict]:
         """
         Filter samples to only include CWEs that:
         1. Have a matching mutation operator in CWE_OPERATOR_MAP
@@ -365,7 +556,8 @@ class DatasetBuilder:
 
         Args:
             samples: List of samples to filter
-            min_samples: Minimum samples required per CWE
+            min_samples: Minimum samples required per CWE (default: 2)
+            verbose: Print detailed drop reasons for each CWE
 
         Returns:
             Tuple of (filtered_samples, stats_dict)
@@ -381,7 +573,7 @@ class DatasetBuilder:
         usable_cwes = set()
         removed_cwes = []
 
-        for cwe, count in cwe_counts.items():
+        for cwe, count in sorted(cwe_counts.items()):
             has_operator = cwe in CWE_OPERATOR_MAP if OPERATOR_REGISTRY_AVAILABLE else True
             has_enough_samples = count >= min_samples
 
@@ -392,8 +584,15 @@ class DatasetBuilder:
                 if not has_operator:
                     reason.append("no operator")
                 if not has_enough_samples:
-                    reason.append(f"only {count} samples")
+                    reason.append(f"only {count} samples (need {min_samples})")
                 removed_cwes.append((cwe, ", ".join(reason)))
+
+        # Verbose logging of drop reasons
+        if verbose and removed_cwes:
+            print("\n  CWE Drop Details:")
+            for cwe, reason in removed_cwes:
+                print(f"    [DROP] {cwe}: {reason}")
+            print(f"\n  Kept CWEs ({len(usable_cwes)}): {sorted(usable_cwes)}")
 
         # Filter samples
         filtered = [s for s in samples if s.cwe in usable_cwes]
@@ -410,8 +609,15 @@ class DatasetBuilder:
         return filtered, stats
 
     def _select_samples(self, samples: List[Sample],
-                        distribution: Dict[str, int]) -> List[Sample]:
-        """Select samples according to target distribution."""
+                        distribution: Dict[str, int],
+                        max_per_cwe: int = 20) -> List[Sample]:
+        """Select samples according to target distribution.
+
+        Args:
+            samples: All available samples
+            distribution: CWE weight distribution
+            max_per_cwe: Maximum samples per CWE to prevent over-representation
+        """
         # Group by CWE
         by_cwe = defaultdict(list)
         for sample in samples:
@@ -428,27 +634,111 @@ class DatasetBuilder:
             available = by_cwe.get(cwe, [])
 
             if not available:
-                print(f"  Warning: No samples for {cwe}")
                 continue
 
-            # Prioritize SecMutBench templates, then SecurityEval, then CyberSecEval
-            available.sort(key=lambda s: (
-                0 if s.source == "SecMutBench" else
-                1 if s.source == "SecurityEval" else 2
-            ))
-
-            # Select up to target
-            count = min(scaled_target, len(available))
+            # Apply CWE cap to prevent over-representation (e.g., CWE-79)
+            # Cap at max_per_cwe or scaled_target, whichever is smaller
+            count = min(scaled_target, len(available), max_per_cwe)
             selected.extend(available[:count])
 
-        # If we haven't reached target, add more from any CWE
+        # If we haven't reached target, add more from any CWE (respecting caps)
         if len(selected) < self.target_samples:
-            remaining = [s for s in samples if s not in selected]
+            # Count how many we already have per CWE
+            cwe_counts = defaultdict(int)
+            for s in selected:
+                cwe_counts[s.cwe] += 1
+
+            # Add remaining samples, respecting max_per_cwe
+            remaining = []
+            for s in samples:
+                if s not in selected and cwe_counts[s.cwe] < max_per_cwe:
+                    remaining.append(s)
+
             self.random.shuffle(remaining)
             needed = self.target_samples - len(selected)
-            selected.extend(remaining[:needed])
+
+            for s in remaining[:needed]:
+                if cwe_counts[s.cwe] < max_per_cwe:
+                    selected.append(s)
+                    cwe_counts[s.cwe] += 1
 
         return selected
+
+    def _structural_dedup(self, samples: List[Sample], max_per_pattern: int = 2) -> List[Sample]:
+        """Remove structural near-duplicates from external sources.
+
+        SecCodePLT generates variations by renaming variables/functions.
+        After normalizing identifiers, many samples collapse to 1 structural pattern.
+        Keep at most max_per_pattern representatives per structural group.
+
+        Also removes exact secure_code duplicates (keep only 1 per identical code
+        within same CWE+source), since they produce identical evaluation results.
+        """
+        result = []
+        by_cwe_source = defaultdict(list)
+
+        for s in samples:
+            if s.source in ("SecCodePLT", "CWEval"):
+                by_cwe_source[(s.cwe, s.source)].append(s)
+            else:
+                result.append(s)
+
+        exact_dedup_count = 0
+        structural_dedup_count = 0
+
+        for (cwe, source), group in by_cwe_source.items():
+            # Phase 1: Exact secure_code dedup (keep only 1 per identical code)
+            exact_groups = defaultdict(list)
+            for s in group:
+                exact_groups[s.secure_code].append(s)
+
+            unique_samples = []
+            for code_key, samps in exact_groups.items():
+                unique_samples.append(samps[0])
+                exact_dedup_count += len(samps) - 1
+
+            # Phase 2: Structural dedup on the unique samples
+            patterns = defaultdict(list)
+            for s in unique_samples:
+                normalized = re.sub(r'\b[a-zA-Z_]\w*\b', 'X', s.secure_code)
+                patterns[normalized].append(s)
+
+            for pattern_key, samps in patterns.items():
+                kept = samps[:max_per_pattern]
+                result.extend(kept)
+                structural_dedup_count += len(samps) - len(kept)
+
+        if exact_dedup_count > 0:
+            print(f"  Exact dedup: removed {exact_dedup_count} samples with identical secure_code")
+        if structural_dedup_count > 0:
+            print(f"  Structural dedup: removed {structural_dedup_count} near-duplicate samples")
+
+        # Phase 3: Cross-source similarity check (catch >95% similar pairs)
+        from difflib import SequenceMatcher
+        similarity_dedup_count = 0
+        by_cwe = defaultdict(list)
+        for s in result:
+            by_cwe[s.cwe].append(s)
+
+        final_result = []
+        for cwe, group in by_cwe.items():
+            kept = []
+            for s in group:
+                is_near_dupe = False
+                for existing in kept:
+                    sim = SequenceMatcher(None, s.secure_code, existing.secure_code).ratio()
+                    if sim > 0.95:
+                        is_near_dupe = True
+                        similarity_dedup_count += 1
+                        break
+                if not is_near_dupe:
+                    kept.append(s)
+            final_result.extend(kept)
+
+        if similarity_dedup_count > 0:
+            print(f"  Cross-source similarity dedup (>95%): removed {similarity_dedup_count} near-duplicate samples")
+
+        return final_result
 
     def _apply_contamination_prevention(self, samples: List[Sample]) -> List[Sample]:
         """Apply perturbation pipeline to external samples."""
@@ -641,7 +931,7 @@ class DatasetBuilder:
         vd_runner = None
         if TEST_RUNNER_AVAILABLE:
             try:
-                vd_runner = TestRunner(timeout=3.0)
+                vd_runner = TestRunner(timeout=5.0)
             except Exception as e:
                 print(f"Warning: Could not initialize TestRunner: {e}")
 
@@ -651,6 +941,9 @@ class DatasetBuilder:
                 r'\.execute\s*\([^)]*%[sd].*%',  # String formatting in SQL
                 r'\.execute\s*\([^)]*\.format\(',  # .format() in SQL
                 r'f["\'].*\{.*\}.*(?:SELECT|INSERT|UPDATE|DELETE)',  # f-string SQL
+            ],
+            'CWE-77': [
+                r'shell\s*=\s*True',  # shell=True is inherently unsafe for command injection
             ],
             'CWE-78': [
                 r'\bos\.popen\s*\(',  # os.popen is inherently unsafe
@@ -666,7 +959,7 @@ class DatasetBuilder:
                 if op_name in OPERATORS:
                     op = OPERATORS[op_name]
                     if op.applies_to(code):
-                        mutants = op.mutate(code)
+                        mutants = op.generate_valid_mutants(code)
                         if mutants:
                             working_ops.append(op_name)
             return len(working_ops) > 0, working_ops
@@ -799,21 +1092,35 @@ class DatasetBuilder:
                     insecure_pass = insecure_result.all_passed
 
                     if secure_pass and insecure_pass:
-                        # Test doesn't detect the vulnerability
+                        # Test doesn't detect the vulnerability - drop it
                         dropped["vd_both_pass"] += 1
-                        dropped_details.append((sample.id, f"vd_both_pass: test passes on insecure code"))
+                        # DIAGNOSTIC: Log CWE, source, and test snippet for analysis
+                        test_snippet = sample.security_tests[:100].replace('\n', '\\n')
+                        dropped_details.append((
+                            sample.id,
+                            f"vd_both_pass|{sample.cwe}|{sample.source}|{test_snippet}"
+                        ))
                         continue
                     elif not secure_pass and not insecure_pass:
                         # Test fails on secure code too (crash or assertion issue)
                         err = secure_result.tests[0].error if secure_result.tests else "unknown"
-                        err_type = err.split(":")[0] if err else "unknown"
+                        # Extract full error type for diagnosis
+                        err_type = err.split(":")[0] if ":" in str(err) else str(err)[:50]
                         dropped["vd_both_fail"] += 1
-                        dropped_details.append((sample.id, f"vd_both_fail: {err_type}"))
+                        # DIAGNOSTIC: Log CWE, source, and full error
+                        dropped_details.append((
+                            sample.id,
+                            f"vd_both_fail|{sample.cwe}|{sample.source}|{err_type}|{str(err)[:100]}"
+                        ))
                         continue
                     elif not secure_pass and insecure_pass:
                         # Inverted: secure fails but insecure passes
+                        err = secure_result.tests[0].error if secure_result.tests else "unknown"
                         dropped["vd_inverted"] += 1
-                        dropped_details.append((sample.id, "vd_inverted: secure fails, insecure passes"))
+                        dropped_details.append((
+                            sample.id,
+                            f"vd_inverted|{sample.cwe}|{sample.source}|{str(err)[:100]}"
+                        ))
                         continue
                     # else: secure_pass and not insecure_pass - correct VD behavior
                 except Exception as e:
@@ -822,11 +1129,23 @@ class DatasetBuilder:
 
             valid.append(sample)
 
+        # Build diagnostic summary by CWE and error type
+        vd_diagnostics = defaultdict(lambda: defaultdict(int))
+        for sample_id, detail in dropped_details:
+            if "|" in detail:
+                parts = detail.split("|")
+                drop_type = parts[0]
+                cwe = parts[1] if len(parts) > 1 else "unknown"
+                source = parts[2] if len(parts) > 2 else "unknown"
+                err_type = parts[3] if len(parts) > 3 else ""
+                vd_diagnostics[drop_type][f"{cwe}|{source}|{err_type}"] += 1
+
         stats = {
             "before": len(samples),
             "after": len(valid),
             "dropped": dropped,
-            "dropped_details": dropped_details[:10]  # First 10 for logging
+            "dropped_details": dropped_details[:50],  # More details for diagnosis
+            "vd_diagnostics": dict(vd_diagnostics),  # By CWE/source/error
         }
 
         return valid, stats
@@ -850,7 +1169,7 @@ class DatasetBuilder:
 
         return updated
 
-    def _pregenerate_mutants(self, samples: List[Sample], max_mutants: int = 20) -> List[Sample]:
+    def _pregenerate_mutants(self, samples: List[Sample], max_mutants: int = 30) -> List[Sample]:
         """
         Pre-generate mutants for each sample and attach as _mutants attribute.
 
@@ -859,7 +1178,7 @@ class DatasetBuilder:
 
         Args:
             samples: List of validated samples
-            max_mutants: Maximum mutants per sample (increased to 20 for variant expansion)
+            max_mutants: Maximum mutants per sample (increased to 30 for broader coverage)
 
         Returns:
             Same samples list with _mutants attribute set
@@ -885,6 +1204,7 @@ class DatasetBuilder:
                     sample.secure_code,
                     cwe=None,
                     max_mutants=max_mutants,
+                    allow_additional=False,  # Prevent cross-CWE contamination
                 )
 
                 mutants_data = []
@@ -894,9 +1214,14 @@ class DatasetBuilder:
                         "operator": mutant.operator,
                         "description": mutant.description,
                         "mutated_code": mutant.mutated_code,
+                        "variant_type": mutant.variant_type,
                     })
 
                 sample._mutants = mutants_data
+                # Update mutation_operators to reflect actual operators that fired
+                actual_ops = list(dict.fromkeys(m['operator'] for m in mutants_data))
+                if actual_ops:
+                    sample.mutation_operators = actual_ops
                 total_mutants += len(mutants_data)
                 if mutants_data:
                     samples_with_mutants += 1
@@ -988,7 +1313,7 @@ class DatasetBuilder:
         # Build metadata
         metadata = {
             "name": "SecMutBench",
-            "version": "2.0.0",
+            "version": SECMUTBENCH_VERSION,
             "created": datetime.now().isoformat(),
             "total_samples": len(samples),
             "stats": {
@@ -1025,6 +1350,39 @@ class DatasetBuilder:
                 level = getattr(s, '_quality', {}).get('quality_level', 'unknown')
                 by_quality[level] += 1
             metadata["stats"]["by_quality"] = dict(by_quality)
+
+        # Add operator alignment audit for paper reporting
+        # Tracks which samples used CWE-aligned vs fallback operators
+        fallback_log = get_fallback_audit_log()
+        if fallback_log:
+            cwe_aligned_fallbacks = [e for e in fallback_log if e['type'] == 'cwe_aligned_fallback']
+            no_fire = [e for e in fallback_log if e['type'] == 'no_operators_fire']
+            metadata["operator_audit"] = {
+                "cwe_aligned_fallback_count": len(cwe_aligned_fallbacks),
+                "no_operators_fire_count": len(no_fire),
+                "fallback_details": cwe_aligned_fallbacks[:20],  # First 20 for inspection
+                "note": "All operators are CWE-aligned. No cross-contamination fallback used."
+            }
+
+        # C11 fix: Count actual mutants per operator, not just samples
+        op_counts = defaultdict(int)
+        for s in samples:
+            if hasattr(s, '_mutants') and s._mutants:
+                for m in s._mutants:
+                    op_name = m.get('operator', '')
+                    if op_name:
+                        op_counts[op_name] += 1
+            else:
+                # Fallback: count sample operators if no pre-generated mutants
+                for op in (s.mutation_operators or []):
+                    op_counts[op] += 1
+        metadata["stats"]["by_operator"] = dict(sorted(op_counts.items(), key=lambda x: -x[1]))
+        # Also store sample-level counts for reference
+        op_sample_counts = defaultdict(int)
+        for s in samples:
+            for op in (s.mutation_operators or []):
+                op_sample_counts[op] += 1
+        metadata["stats"]["by_operator_samples"] = dict(sorted(op_sample_counts.items(), key=lambda x: -x[1]))
 
         dataset = {
             "metadata": metadata,
@@ -1092,10 +1450,14 @@ Examples:
                         help="Only validate existing dataset")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed (default: 42)")
-    parser.add_argument("--min-samples", type=int, default=5,
-                        help="Minimum samples per CWE to include (default: 5)")
+    parser.add_argument("--min-samples", type=int, default=3,
+                        help="Minimum samples per CWE to include (default: 3)")
     parser.add_argument("--skip-vd-validation", action="store_true",
                         help="Skip VD validation (tests pass on secure, fail on insecure)")
+    parser.add_argument("--include-variations", type=str, default=None,
+                        help="Include LLM-generated variations from JSON file (e.g., data/variations.json)")
+    parser.add_argument("--verbose-drop", action="store_true",
+                        help="Show detailed CWE drop reasons during filtering")
 
     args = parser.parse_args()
 
@@ -1160,7 +1522,9 @@ Examples:
         validate=not args.skip_validation,
         deep_validate=args.deep_validate,
         min_samples_per_cwe=args.min_samples,
-        skip_vd_validation=args.skip_vd_validation
+        skip_vd_validation=args.skip_vd_validation,
+        variations_file=args.include_variations,
+        verbose_drop=args.verbose_drop
     )
 
     # Save main dataset

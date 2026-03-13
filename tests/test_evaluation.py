@@ -142,122 +142,152 @@ class TestKillClassification:
 
     def test_semantic_kill_sql_injection(self):
         """SQL injection terms should classify as semantic."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="AssertionError: SQL injection detected",
             operator="PSQLI",
             mock_access={}
         )
-        assert classification == "semantic"
+        assert kill_type == "semantic"
+        assert layer == "operator_keyword"
 
     def test_semantic_kill_command_injection(self):
         """Command injection terms should classify as semantic."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="AssertionError: Command injection in shell",
             operator="CMDINJECT",
             mock_access={}
         )
-        assert classification == "semantic"
+        assert kill_type == "semantic"
+        assert layer == "operator_keyword"
 
     def test_semantic_kill_path_traversal(self):
         """Path traversal terms should classify as semantic."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="AssertionError: path traversal detected",
             operator="PATHCONCAT",
             mock_access={}
         )
-        assert classification == "semantic"
+        assert kill_type == "semantic"
+        assert layer == "operator_keyword"
 
     def test_semantic_kill_via_mock_access(self):
         """Mock security attribute access should classify as semantic."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="AssertionError: test failed",
             operator="PSQLI",
             mock_access={"db": ["last_query", "last_params"]}
         )
-        assert classification == "semantic"
+        assert kill_type == "semantic"
+        assert layer == "mock_observability"
 
     def test_crash_kill_import_error(self):
         """ImportError should classify as crash."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="ImportError: No module named 'foo'",
             operator="PSQLI",
             mock_access={}
         )
-        assert classification == "crash"
+        assert kill_type == "crash"
+        assert layer == "crash"
 
     def test_crash_kill_name_error(self):
         """NameError should classify as crash."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="NameError: name 'undefined' is not defined",
             operator="PSQLI",
             mock_access={}
         )
-        assert classification == "crash"
+        assert kill_type == "crash"
 
     def test_crash_kill_type_error(self):
         """TypeError should classify as crash."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="TypeError: cannot concatenate 'str' and 'int'",
             operator="PSQLI",
             mock_access={}
         )
-        assert classification == "crash"
+        assert kill_type == "crash"
 
     def test_incidental_kill(self):
         """AssertionError without security terms should be incidental."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="AssertionError: expected True, got False",
             operator="PSQLI",
             mock_access={}
         )
-        # Should be either incidental or assertion_incidental
-        assert classification in ("incidental", "assertion_incidental")
+        assert kill_type == "assertion_incidental"
+        assert layer == "none"
 
     def test_functional_kill_did_not_raise(self):
         """DID NOT RAISE should classify as functional."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="Failed: DID NOT RAISE <class 'ValueError'>",
             operator="WEAKCRYPTO",
             mock_access={}
         )
-        assert classification == "functional"
+        assert kill_type == "functional"
+        assert layer == "functional"
 
     def test_functional_kill_did_not_raise_any_exception(self):
         """DID NOT RAISE any exception type should classify as functional."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="Failed: DID NOT RAISE <class 'Exception'>",
             operator="PATHCONCAT",
             mock_access={}
         )
-        assert classification == "functional"
+        assert kill_type == "functional"
 
     def test_layer_125_xss_payload_in_assertion(self):
         """Layer 1.25: XSS payload in bare assertion should classify as semantic."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="AssertionError: assert '<script>' not in '<div><script>alert(1)</script></div>'",
             operator="RVALID",
             mock_access={}
         )
-        assert classification == "semantic"
+        assert kill_type == "semantic"
+        # "script" matches RVALID operator keyword before reaching attack_payload layer
+        assert layer in ("operator_keyword", "attack_payload")
 
     def test_layer_125_path_traversal_payload(self):
         """Layer 1.25: Path traversal payload should classify as semantic."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="AssertionError: assert '../' not in '/uploads/../../../etc/passwd'",
             operator="PATHCONCAT",
             mock_access={}
         )
-        assert classification == "semantic"
+        assert kill_type == "semantic"
+        # Could be operator_keyword (traversal) or attack_payload (../)
+        assert layer in ("operator_keyword", "attack_payload")
 
     def test_layer_125_wrong_operator_is_incidental(self):
         """Layer 1.25: Payload for wrong operator should be incidental."""
         # XSS payload in a crypto test is coincidental, not security-aware
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="AssertionError: assert '<script>' not in output",
             operator="WEAKCRYPTO",
             mock_access={}
         )
-        assert classification == "assertion_incidental"
+        assert kill_type == "assertion_incidental"
+
+    def test_generic_keyword_tagged_separately(self):
+        """Generic security term should be tagged as generic_keyword layer."""
+        kill_type, layer = classify_kill(
+            error="AssertionError: result is not secure enough",
+            operator="PSQLI",
+            mock_access={}
+        )
+        assert kill_type == "semantic"
+        assert layer == "generic_keyword"
+
+    def test_generic_keyword_without_operator(self):
+        """Generic security term without operator should also be generic_keyword."""
+        kill_type, layer = classify_kill(
+            error="AssertionError: unsafe operation detected",
+            operator=None,
+            mock_access={}
+        )
+        assert kill_type == "semantic"
+        assert layer == "generic_keyword"
 
 
 class TestMetricsCalculation:
@@ -395,10 +425,10 @@ class TestVersion:
         assert "environment" in info
         assert "python_version" in info["environment"]
 
-    def test_version_is_250(self):
-        """Version should be 2.5.0."""
+    def test_version_is_280(self):
+        """Version should be 2.8.0."""
         from evaluation.version import __version__
-        assert __version__ == "2.5.0"
+        assert __version__ == "2.8.0"
 
 
 class TestNewOperatorKillClassification:
@@ -406,57 +436,63 @@ class TestNewOperatorKillClassification:
 
     def test_semantic_kill_eval_injection(self):
         """EVALINJECT terms should classify as semantic."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="AssertionError: eval injection detected in code",
             operator="EVALINJECT",
             mock_access={}
         )
-        assert classification == "semantic"
+        assert kill_type == "semantic"
+        assert layer == "operator_keyword"
 
     def test_semantic_kill_open_redirect(self):
         """OPENREDIRECT terms should classify as semantic."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="AssertionError: redirect URL not validated",
             operator="OPENREDIRECT",
             mock_access={}
         )
-        assert classification == "semantic"
+        assert kill_type == "semantic"
+        assert layer == "operator_keyword"
 
     def test_semantic_kill_cert_validation(self):
         """NOCERTVALID terms should classify as semantic."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="AssertionError: SSL certificate verification disabled",
             operator="NOCERTVALID",
             mock_access={}
         )
-        assert classification == "semantic"
+        assert kill_type == "semantic"
+        assert layer == "operator_keyword"
 
     def test_semantic_kill_info_exposure(self):
         """INFOEXPOSE terms should classify as semantic."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="AssertionError: error message exposes stack trace",
             operator="INFOEXPOSE",
             mock_access={}
         )
-        assert classification == "semantic"
+        assert kill_type == "semantic"
+        assert layer == "operator_keyword"
 
     def test_semantic_kill_redos(self):
         """REGEXDOS terms should classify as semantic."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="AssertionError: regex pattern vulnerable to backtracking",
             operator="REGEXDOS",
             mock_access={}
         )
-        assert classification == "semantic"
+        assert kill_type == "semantic"
+        assert layer == "operator_keyword"
 
     def test_semantic_kill_missing_auth(self):
         """MISSINGAUTH terms should classify as semantic."""
-        classification = classify_kill(
+        kill_type, layer = classify_kill(
             error="AssertionError: authorization check missing",
             operator="MISSINGAUTH",
             mock_access={}
         )
-        assert classification == "semantic"
+        assert kill_type == "semantic"
+        assert layer == "operator_keyword"
 
 
 class TestAttackVectors:

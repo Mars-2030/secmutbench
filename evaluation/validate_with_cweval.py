@@ -259,7 +259,8 @@ VULN_FINGERPRINTS = {
     "CWE-502": {
         "patterns": [r'yaml\.load\b(?!\s*\(.*safe)', r'pickle\.loads?\b',
                      r'Loader\s*=\s*Loader', r'yaml\.unsafe_load', r'\beval\(',
-                     r'UnsafeLoader', r'FullLoader'],
+                     r'UnsafeLoader', r'FullLoader', r'marshal\.loads?\b',
+                     r'!!python/object', r'!!python/apply', r'object_hook'],
         "description": "Insecure deserialization",
     },
     "CWE-918": {
@@ -270,7 +271,10 @@ VULN_FINGERPRINTS = {
     },
     "CWE-20": {
         "patterns": [r'\.endswith\(', r'\.startswith\(', r'in\s+target_url\.netloc',
-                     r'netloc\s+not\s+in', r'allowed_domains', r'valid_domains'],
+                     r'netloc\s+not\s+in', r'allowed_domains', r'valid_domains',
+                     r'isinstance\s*\(', r'type\s*\(\s*\w+\s*\)\s*[!=]=',
+                     r'\.isdigit\(\)', r'\.isnumeric\(\)', r'len\s*\(.*\)\s*[<>=]',
+                     r'urlparse', r'\.netloc', r'\.scheme'],
         "description": "Incomplete input validation",
     },
     "CWE-89": {
@@ -321,12 +325,12 @@ VULN_FINGERPRINTS = {
     },
     "CWE-400": {
         "patterns": [r'\(\.\*\)\+', r'\(\.\+\)\+', r'\(\[.*\]\+\)\+', r'\(\w\+\)\+',
-                     r'a{1,100}{1,100}', r'\(\?:.*\)\{.*\}\{'],
+                     r'a\{1,100\}\{1,100\}', r'\(\?:.*\)\{.*\}\{'],
         "description": "ReDoS via catastrophic backtracking regex",
     },
     "CWE-1333": {
         "patterns": [r'\(\.\*\)\+', r'\(\.\+\)\+', r'\(\[.*\]\+\)\+', r'\(\w\+\)\+',
-                     r'a{1,100}{1,100}', r'\(\?:.*\)\{.*\}\{'],
+                     r'a\{1,100\}\{1,100\}', r'\(\?:.*\)\{.*\}\{'],
         "description": "ReDoS via inefficient regex (alias of CWE-400)",
     },
     "CWE-862": {
@@ -338,6 +342,67 @@ VULN_FINGERPRINTS = {
         "patterns": [r'csrf_exempt', r'csrf_token', r'X-CSRF-Token',
                      r'@csrf_protect', r'validate_csrf', r'WTF_CSRF'],
         "description": "Missing CSRF protection",
+    },
+    "CWE-117": {
+        "patterns": [r'logging\.\w+\(.*\+', r'logger\.\w+\(.*f["\']',
+                     r'log\.\w+\(.*format', r'\\n', r'\\r',
+                     r'print\(.*user', r'logging\.info\(.*request'],
+        "description": "Log injection via unsanitized user input in logs",
+    },
+    "CWE-306": {
+        "patterns": [r'@login_required', r'is_authenticated', r'check_auth',
+                     r'require_auth', r'@auth_required', r'PermissionError',
+                     r'session\[.*user', r'request\.user'],
+        "description": "Missing authentication for critical function",
+    },
+    "CWE-319": {
+        "patterns": [r'http://', r'https://', r'verify\s*=\s*False',
+                     r'CERT_NONE', r'ssl', r'tls', r'ftp://'],
+        "description": "Cleartext transmission of sensitive information",
+    },
+    "CWE-328": {
+        "patterns": [r'\bmd5\b', r'\bsha1\b', r'hashlib\.md5', r'hashlib\.sha1',
+                     r'sha256', r'sha512', r'bcrypt', r'pbkdf2'],
+        "description": "Weak hash without salt (reversible)",
+    },
+    "CWE-434": {
+        "patterns": [r'\.filename', r'allowed_extensions', r'file\.save',
+                     r'\.endswith', r'content_type', r'mimetype',
+                     r'upload', r'multipart'],
+        "description": "Unrestricted file upload",
+    },
+    "CWE-639": {
+        "patterns": [r'user_id', r'current_user', r'request\.user',
+                     r'object_id', r'pk=', r'get_object_or_404'],
+        "description": "Authorization bypass through user-controlled key (IDOR)",
+    },
+    "CWE-732": {
+        "patterns": [r'chmod', r'0o777', r'0o666', r'0o755', r'os\.chmod',
+                     r'stat\.S_', r'permission', r'umask', r'world.readable',
+                     r'mode\s*='],
+        "description": "Incorrect permission assignment for critical resource",
+    },
+    "CWE-74": {
+        "patterns": [r'os\.system', r'subprocess', r'eval\(', r'exec\(',
+                     r'\.format\(', r'f["\'].*\{.*\}', r'\+\s*user'],
+        "description": "Injection (general)",
+    },
+    "CWE-863": {
+        "patterns": [r'is_admin', r'is_superuser', r'has_permission',
+                     r'role', r'authorize', r'access_control',
+                     r'@permission_required', r'check_permission'],
+        "description": "Incorrect authorization",
+    },
+    "CWE-915": {
+        "patterns": [r'setattr', r'__dict__', r'update\(', r'mass_assignment',
+                     r'\*\*kwargs', r'\*\*request', r'__class__'],
+        "description": "Mass assignment vulnerability",
+    },
+    "CWE-94": {
+        "patterns": [r'\beval\s*\(', r'\bexec\s*\(', r'compile\s*\(',
+                     r'__import__', r'importlib', r'subprocess\.call',
+                     r'os\.system'],
+        "description": "Code injection",
     },
 }
 
@@ -447,6 +512,45 @@ ATTACK_CATEGORIES = {
         "token_validation": [r'csrf_token', r'X-CSRF-Token', r'_csrf'],
         "method_check": [r'request\.method', r'POST', r'PUT', r'DELETE'],
         "protection": [r'@csrf_protect', r'validate_csrf', r'CSRFProtect'],
+    },
+    "CWE-117": {
+        "newline_injection": [r'\\n', r'\\r', r'%0a', r'%0d'],
+        "log_format": [r'logging\.', r'logger\.', r'log\.info', r'log\.error'],
+        "sanitization": [r'replace.*\\n', r'strip', r'sanitize', r'escape'],
+    },
+    "CWE-1333": {
+        "nested_quantifier": [r'\(\.\*\)\+', r'\(\.\+\)\+', r'\(\w\+\)\+'],
+        "backtracking": [r'\(\[.*\]\)\{', r'a\{.*\}\{', r'\(\?:.*\)\+\+'],
+        "timeout_protection": [r'timeout', r're2', r'regex\.match.*timeout'],
+    },
+    "CWE-732": {
+        "permission_value": [r'0o777', r'0o666', r'0o755', r'0o644'],
+        "chmod_call": [r'os\.chmod', r'chmod', r'fchmod'],
+        "permission_check": [r'stat\.S_', r'os\.stat', r'permission'],
+        "safe_permission": [r'0o600', r'0o400', r'0o700'],
+    },
+    "CWE-94": {
+        "code_execution": [r'eval\(', r'exec\(', r'compile\(', r'__import__'],
+        "sandbox_check": [r'ast\.literal_eval', r'restricted', r'sandbox', r'safe_eval'],
+        "injection_payload": [r'__class__', r'__mro__', r'__subclasses__', r'__builtins__'],
+        "safe_check": [r'literal_eval', r'ast\.parse', r'whitelist'],
+    },
+    "CWE-306": {
+        "auth_decorator": [r'@login_required', r'@auth_required', r'@require_auth'],
+        "auth_check": [r'is_authenticated', r'check_auth', r'verify_auth'],
+        "session_check": [r'session\[', r'request\.user', r'current_user'],
+        "error_response": [r'PermissionError', r'unauthorized', r'forbidden', r'401'],
+    },
+    "CWE-798": {
+        "hardcoded_password": [r'password\s*=\s*["\']', r'passwd\s*=\s*["\']'],
+        "hardcoded_key": [r'api_key\s*=\s*["\']', r'secret\s*=\s*["\']', r'token\s*=\s*["\']'],
+        "environment_var": [r'os\.environ', r'getenv', r'config\[', r'\.env'],
+        "known_defaults": [r'admin123', r'password123', r'SuperSecret', r'changeme'],
+    },
+    "CWE-338": {
+        "weak_random": [r'random\.random', r'random\.randint', r'random\.choice'],
+        "secure_random": [r'secrets\.', r'os\.urandom', r'SystemRandom'],
+        "crypto_context": [r'token', r'key', r'password', r'nonce', r'salt'],
     },
 }
 

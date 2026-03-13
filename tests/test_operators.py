@@ -474,16 +474,19 @@ class TestINFOEXPOSE:
     """Tests for INFOEXPOSE operator (CWE-209: Information Exposure)."""
 
     def test_applies_to_generic_error(self):
-        """Should apply to generic error messages."""
+        """Should apply to exception handler with generic error response."""
         op = INFOEXPOSE()
         code = '''
-def handle_error(e):
-    return "An error occurred"
+def handle_request(data):
+    try:
+        process(data)
+    except Exception as e:
+        return {"error": "An error occurred"}
 '''
         assert op.applies_to(code) is True
 
     def test_applies_to_logging(self):
-        """Should apply to error logging."""
+        """Should apply to error logging with generic error response."""
         op = INFOEXPOSE()
         code = '''
 def process(data):
@@ -491,7 +494,7 @@ def process(data):
         return do_work(data)
     except Exception as e:
         logger.error("Processing failed")
-        raise
+        return {"error": "Processing failed"}
 '''
         assert op.applies_to(code) is True
 

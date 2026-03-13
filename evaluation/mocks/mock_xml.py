@@ -10,7 +10,12 @@ from typing import Dict
 class MockXMLParser:
     """Mock XML parser for testing XXE vulnerabilities."""
 
+    # Security-relevant attributes for observability tracking
+    SECURITY_ATTRS = {"last_xml", "external_entities_resolved", "dtd_processed"}
+
     def __init__(self):
+        # Initialize security attribute access tracking
+        object.__setattr__(self, "_accessed_security_attrs", set())
         self.last_xml = None
         self.external_entities_resolved = False
         self.dtd_processed = False
@@ -24,11 +29,23 @@ class MockXMLParser:
             "php://",
         ]
 
+    def __getattribute__(self, name):
+        """Track access to security-relevant attributes."""
+        value = object.__getattribute__(self, name)
+        if name in MockXMLParser.SECURITY_ATTRS:
+            accessed = object.__getattribute__(self, "_accessed_security_attrs")
+            accessed.add(name)
+        return value
+
     def reset(self):
         """Reset parser state."""
         self.last_xml = None
         self.external_entities_resolved = False
         self.dtd_processed = False
+
+    def reset_security_tracking(self):
+        """Reset security attribute access tracking."""
+        object.__setattr__(self, "_accessed_security_attrs", set())
 
     def parse_unsafe(self, xml_string: str) -> Dict:
         """Parse XML without security (vulnerable to XXE)."""

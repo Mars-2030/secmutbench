@@ -23,6 +23,8 @@ try:
         aggregate_by_cwe,
         aggregate_by_difficulty,
         aggregate_by_operator,
+        aggregate_by_source_type,
+        aggregate_by_mutant_category,
         analyze_survival_patterns,
         format_metrics_report,
         calculate_kill_breakdown,
@@ -49,6 +51,8 @@ except ImportError:
         aggregate_by_cwe,
         aggregate_by_difficulty,
         aggregate_by_operator,
+        aggregate_by_source_type,
+        aggregate_by_mutant_category,
         analyze_survival_patterns,
         format_metrics_report,
         calculate_kill_breakdown,
@@ -228,16 +232,59 @@ OPERATOR_SECURITY_PATTERNS = {
         "role", "privilege", "admin", "owner",
         "forbidden", "403", "acl",
     ],
-    # CWE-778: Insufficient Logging
-    "INSUFFLOG": [
-        "log", "audit", "monitor", "track",
-        "record", "security.*event", "alert",
+    # CWE-522: Credential Exposure
+    "CREDEXPOSE": [
+        "credential", "password", "secret", "token",
+        "plaintext", "cleartext", "encrypt",
+        "hash", "bcrypt", "sensitive",
     ],
-    # CWE-352: CSRF (already exists as CSRF_REMOVE, adding alias patterns)
-    "CSRF": [
-        "csrf", "token", "cross.*site.*request",
-        "forgery", "session", "csrftoken",
-        "x-csrf", "validate.*token",
+    # CWE-434: Unrestricted File Upload
+    "FILEUPLOAD": [
+        "upload", "file", "extension", "mime",
+        "content_type", "allowed", "restrict",
+        "filename", "filetype", "executable",
+    ],
+    # CWE-113: HTTP Response Splitting
+    "HTTPRS": [
+        "header", "response", "crlf", "newline",
+        "\\r\\n", "inject", "split",
+        "http.*response", "set-cookie",
+    ],
+    # CWE-90/643: LDAP Injection
+    "LDAPINJECT": [
+        "ldap", "inject", "filter", "bind",
+        "search", "escape", "sanitize",
+        "directory", "dn", "distinguished",
+    ],
+    # CWE-117: Log Injection
+    "LOGINJECT": [
+        "log", "inject", "newline", "crlf",
+        "\\n", "\\r", "sanitize", "escape",
+        "audit", "record", "forged",
+    ],
+    # CWE-326: Weak Key
+    "WEAKKEY": [
+        "key.*size", "key.*length", "bit", "1024",
+        "512", "weak.*key", "rsa", "dsa",
+        "encrypt", "cipher", "strength",
+    ],
+    # CWE-521: Weak Password Requirements
+    "WEAKPASSREQ": [
+        "password", "length", "complex", "require",
+        "policy", "strength", "weak", "min",
+        "upper", "lower", "digit", "special",
+    ],
+    # CWE-776: XML Bomb
+    "XMLBOMB": [
+        "xml", "bomb", "billion.*laugh", "entity",
+        "recursive", "expand", "dtd", "doctype",
+        "memory", "dos", "exhaust",
+    ],
+    # CWE-732: Weak File Permissions
+    "WEAKPERM": [
+        "permission", "chmod", "mode", "0o777", "0o666",
+        "world.*read", "world.*write", "file.*permission",
+        "os.chmod", "stat", "umask", "writable",
     ],
 }
 
@@ -301,6 +348,23 @@ OPERATOR_MOCK_MAPPING = {
     "SSTI": {"eval": {"last_code", "unsafe_eval_called", "unsafe_exec_called", "injection_detected"}},
     "EVALINJECT": {"eval": {"last_code", "unsafe_eval_called", "unsafe_exec_called", "injection_detected"}},
 
+    # Operators with partial mock state
+    "WEAKRANDOM": {"random": {"weak_prng_used", "secure_prng_used", "last_function"}},
+    "LOGINJECT": {},
+    "OPENREDIRECT": {"http": {"last_url", "ssrf_attempted"}},
+    "NOCERTVALID": {},
+    "FILEUPLOAD": {},
+    "INFOEXPOSE": {},
+    "WEAKKEY": {"crypto": {"last_algorithm", "weak_algorithm_used"}},
+    "LDAPINJECT": {},
+    "XMLBOMB": {"xml": {"last_xml", "external_entities_resolved", "dtd_processed"}},
+    "REGEXDOS": {},
+    "CREDEXPOSE": {"env": {"last_key", "sensitive_accessed", "access_log"}},
+    "WEAKPASSREQ": {},
+    "MISSINGAUTH": {"auth": {"last_username", "last_password", "auth_attempts"}},
+    "HTTPRS": {},
+    "WEAKPERM": {},
+
     # Operators without dedicated mock state (rely on keyword matching only)
     "RVALID": {},
     "INPUTVAL": {},
@@ -310,7 +374,6 @@ OPERATOR_MOCK_MAPPING = {
     "IDOR": {},
     "CORS_WEAK": {},
     "CSRF_REMOVE": {},
-    "WEAKRANDOM": {},
 }
 
 
@@ -378,6 +441,8 @@ OPERATOR_ATTACK_PAYLOADS = {
     ],
     "INPUTVAL": [
         "attacker.com", "evil.com", ".attacker.",
+        "<script>", "-999", "../", "..\\", "null", "undefined",
+        "' OR '1'='1", "999999999", "-1", "__proto__",
     ],
     # CWE-94: Code Injection
     "SSTI": [
@@ -388,10 +453,118 @@ OPERATOR_ATTACK_PAYLOADS = {
         "__import__", "exec(", "eval(", "compile(",
         "os.system", "subprocess",
     ],
+    # CWE-327: Weak Crypto (covers hash output checks)
+    "WEAKCRYPTO": [
+        "md5", "sha1", "sha256", "sha512", "bcrypt",
+        "weak_algorithm", "strong_algorithm",
+    ],
+    # CWE-287/306: Auth Removal
+    "RMAUTH": [
+        "unauthorized", "403", "401", "login",
+        "session", "@login_required", "PermissionError",
+    ],
+    # CWE-319: Encryption Removal
+    "RENCRYPT": [
+        "http://", "https://", "ssl", "tls",
+        "plaintext", "cleartext", "encrypt",
+    ],
+    # CWE-1004: HttpOnly Cookie
+    "RHTTPO": [
+        "httponly", "secure", "samesite", "cookie",
+    ],
+    # CWE-639: IDOR
+    "IDOR": [
+        "user_id", "owner", "forbidden", "unauthorized",
+        "access_denied", "belongs_to",
+    ],
+    # CWE-942: CORS
+    "CORS_WEAK": [
+        "access-control", "origin", "cors", "*",
+        "wildcard", "allow-origin",
+    ],
+    # CWE-352: CSRF
+    "CSRF_REMOVE": [
+        "csrf", "token", "forgery", "x-csrf",
+    ],
+    # CWE-338: Weak Random
+    "WEAKRANDOM": [
+        "random", "secrets", "urandom", "predictable",
+        "secure_random", "SystemRandom",
+    ],
+    # CWE-862: Missing Auth
+    "MISSINGAUTH": [
+        "unauthorized", "forbidden", "403", "permission",
+        "admin", "role", "access_denied",
+    ],
+    # CWE-295: No Cert Validation
+    "NOCERTVALID": [
+        "verify=False", "CERT_NONE", "check_hostname",
+        "unverified", "ssl",
+    ],
+    # CWE-601: Open Redirect
+    "OPENREDIRECT": [
+        "evil.com", "attacker.com", "//evil",
+        "redirect", "location", "next=",
+    ],
+    # CWE-400/1333: ReDoS
+    "REGEXDOS": [
+        "(a+)+", "(.+)+", "catastrophic",
+        "backtrack", "timeout", "redos",
+    ],
+    # CWE-434: File Upload
+    "FILEUPLOAD": [
+        ".exe", ".php", ".jsp", ".sh",
+        "extension", "content_type", "upload",
+    ],
+    # CWE-209: Info Exposure
+    "INFOEXPOSE": [
+        "traceback", "stack_trace", "debug",
+        "Exception(", "str(e)", "internal",
+    ],
+    # CWE-117: Log Injection
+    "LOGINJECT": [
+        "\\n", "\\r", "newline", "%0a",
+        "log_entry", "forged",
+    ],
+    # CWE-776: XML Bomb
+    "XMLBOMB": [
+        "<!ENTITY", "<!DOCTYPE", "billion",
+        "lol", "expand", "recursive",
+    ],
+    # CWE-522: Credential Exposure
+    "CREDEXPOSE": [
+        "password", "plaintext", "cleartext",
+        "hash", "bcrypt", "encrypt",
+    ],
+    # CWE-113: HTTP Response Splitting
+    "HTTPRS": [
+        "\\r\\n", "CRLF", "header",
+        "HTTP/1.1", "Set-Cookie",
+    ],
+    # CWE-521: Weak Password Requirements
+    "WEAKPASSREQ": [
+        "password", "short", "weak", "1234",
+        "abc", "qwerty", "simple",
+    ],
+    # CWE-326: Weak Key
+    "WEAKKEY": [
+        "1024", "512", "key_size", "bits",
+        "rsa", "dsa", "weak_key",
+    ],
+    # CWE-90/643: LDAP Injection
+    "LDAPINJECT": [
+        ")(", "*)(", "ldap", "cn=",
+        "ou=", "dc=", "admin)(",
+    ],
+    # CWE-732: Weak File Permissions
+    "WEAKPERM": [
+        "0o777", "0o666", "777", "666",
+        "world_readable", "world_writable", "chmod",
+    ],
 }
 
 
-def classify_kill(error: str, operator: str = None, mock_access: dict = None) -> str:
+def classify_kill(error: str, operator: str = None, mock_access: dict = None):
     """
     Classify the type of kill based on the error message, mutation operator,
     and mock state observability.
@@ -401,17 +574,24 @@ def classify_kill(error: str, operator: str = None, mock_access: dict = None) ->
     - Layer 0.5: Functional detection (pytest.raises failures - "DID NOT RAISE")
     - Layer 1.5: Mock-state observability (if test accessed security-relevant mock attrs)
     - Layer 1: Operator-aware keyword matching (test author described security property)
+    - Layer 1.1: Generic keyword matching (broad security terms, tagged separately)
     - Layer 1.25: Attack payload detection (bare assertion contains attack payload in repr)
-
-    Layer 1 fires before 1.25 because explicit security descriptions are stronger
-    evidence of security awareness than payload presence in assertion repr.
 
     Kill types:
     - semantic: AssertionError with security awareness (via mock, keyword, or payload)
     - functional: Test expected specific exception that wasn't raised (behavioral detection)
     - assertion_incidental: AssertionError without security awareness
-    - crash: ImportError, TypeError, NameError, SyntaxError, AttributeError
+    - crash: ImportError, TypeError, NameError, SyntaxError, AttributeError, etc.
     - other: Any other exception
+
+    Classification layers (returned as second element):
+    - "crash": Error type detection
+    - "functional": DID NOT RAISE detection
+    - "mock_observability": Test accessed security-relevant mock attributes
+    - "operator_keyword": Matched operator-specific security pattern
+    - "generic_keyword": Matched generic security term (weaker evidence)
+    - "attack_payload": Attack payload found in assertion repr
+    - "none": No security awareness detected
 
     Args:
         error: The error message from the failing test
@@ -419,10 +599,12 @@ def classify_kill(error: str, operator: str = None, mock_access: dict = None) ->
         mock_access: Dict mapping mock names to list of accessed security attrs
 
     Returns:
-        One of: "semantic", "functional", "assertion_incidental", "crash", "other"
+        Tuple of (kill_type, classification_layer). kill_type is one of:
+        "semantic", "functional", "assertion_incidental", "crash", "other".
+        classification_layer identifies which detection layer triggered.
     """
     if not error:
-        return "other"
+        return ("other", "none")
 
     error_lower = error.lower()
 
@@ -430,9 +612,10 @@ def classify_kill(error: str, operator: str = None, mock_access: dict = None) ->
     crash_types = [
         "ImportError", "TypeError", "NameError", "SyntaxError",
         "AttributeError", "IndentationError", "ModuleNotFoundError",
+        "RecursionError", "MemoryError", "OverflowError", "UnicodeDecodeError",
     ]
     if any(ct in error for ct in crash_types):
-        return "crash"
+        return ("crash", "crash")
 
     # Also catch syntax-like errors from execution failures
     syntax_indicators = [
@@ -445,21 +628,26 @@ def classify_kill(error: str, operator: str = None, mock_access: dict = None) ->
         "expected ':'",
         "expected ')'",
         "expected '}'",
+        # Pytest collection errors (module import/syntax failures)
+        "error collecting",
+        "errors ===",
+        "importtestmodule",
+        "_gcd_import",
+        "_find_and_load",
+        "_load_unlocked",
+        "frozen importlib",
+        # Indentation issues
+        "unexpected indent",
+        "unindent does not match",
     ]
     if any(ind in error_lower for ind in syntax_indicators):
-        return "crash"
+        return ("crash", "crash")
 
     # --- Layer 0.5: Functional detection (pytest.raises failures) ---
     # "DID NOT RAISE <class 'ValueError'>" indicates test expected an exception
     # that the mutant didn't raise - this is a legitimate behavioral/functional detection
     if "did not raise" in error_lower:
-        # Check if the expected exception was security-related
-        security_exceptions = ["valueerror", "securityerror", "permissionerror",
-                               "invalidinputerror", "validationerror"]
-        if any(exc in error_lower for exc in security_exceptions):
-            return "functional"
-        # Even non-security exceptions are functional detections
-        return "functional"
+        return ("functional", "functional")
 
     # --- Assertion classification ---
     if "AssertionError" in error or "Assertion failed" in error:
@@ -469,23 +657,22 @@ def classify_kill(error: str, operator: str = None, mock_access: dict = None) ->
             for mock_name, required_attrs in relevant_mocks.items():
                 accessed = set(mock_access.get(mock_name, []))
                 if accessed & required_attrs:  # intersection - any overlap
-                    return "semantic"
+                    return ("semantic", "mock_observability")
 
-        # --- Layer 1: Keyword matching ---
-        # Get operator-specific patterns
+        # --- Layer 1: Operator-specific keyword matching ---
         patterns = OPERATOR_SECURITY_PATTERNS.get(operator, [])
 
-        # Check for operator-relevant security terms first
         for pattern in patterns:
             if re.search(pattern, error_lower):
-                return "semantic"
+                return ("semantic", "operator_keyword")
 
-        # Always check generic patterns as fallback (even when operator is known)
-        # This catches cases where the error matches a generic security term
-        # that isn't in the operator-specific list
+        # --- Layer 1.1: Generic keyword matching ---
+        # Always checked, but tagged as "generic_keyword" to distinguish from
+        # operator-specific matches. Generic terms like "secure" or "unsafe" can
+        # appear incidentally — downstream analysis can filter these out if needed.
         for term in GENERIC_SECURITY_PATTERNS:
             if term in error_lower:
-                return "semantic"
+                return ("semantic", "generic_keyword")
 
         # --- Layer 1.25: Attack payload detection in assertion repr ---
         # When a bare assertion like `assert "<script>" not in result` fails,
@@ -501,11 +688,11 @@ def classify_kill(error: str, operator: str = None, mock_access: dict = None) ->
             payloads = OPERATOR_ATTACK_PAYLOADS.get(operator, [])
             for payload in payloads:
                 if payload.lower() in error_lower:
-                    return "semantic"
+                    return ("semantic", "attack_payload")
 
-        return "assertion_incidental"
+        return ("assertion_incidental", "none")
 
-    return "other"
+    return ("other", "none")
 
 
 def load_benchmark(
@@ -526,10 +713,16 @@ def load_benchmark(
     """
     if path is None:
         base_dir = Path(__file__).parent.parent
-        # Try dataset.json first (new format), then samples.json (legacy)
+        # Try dataset2.json first (v2.8.0), then dataset.json, then samples.json (legacy)
+        dataset2_path = base_dir / "data" / "dataset2.json"
         dataset_path = base_dir / "data" / "dataset.json"
         samples_path = base_dir / "data" / "samples.json"
-        path = dataset_path if dataset_path.exists() else samples_path
+        if dataset2_path.exists():
+            path = dataset2_path
+        elif dataset_path.exists():
+            path = dataset_path
+        else:
+            path = samples_path
 
     with open(path, "r") as f:
         data = json.load(f)
@@ -588,6 +781,7 @@ def evaluate_generated_tests(
         "sample_id": sample["id"],
         "cwe": sample["cwe"],
         "difficulty": sample.get("difficulty", "unknown"),
+        "source_type": sample.get("source_type", "unknown"),
         "metrics": {},
         "mutant_details": [],
         "errors": [],
@@ -640,6 +834,15 @@ def evaluate_generated_tests(
     result["metrics"]["mutants_total"] = 0
     result["metrics"]["mutants_killed"] = 0
 
+    # Gate mutation testing on secure_passes: if tests fail on secure code,
+    # they would fail on mutants too (false kills). Skip to avoid inflating scores.
+    if not result["metrics"].get("secure_passes", False):
+        result["metrics"]["mutation_score"] = None
+        result["metrics"]["mutation_score_valid"] = False
+        result["metrics"]["mutation_score_skipped_reason"] = "tests_fail_on_secure_code"
+        result["metrics"]["execution_time"] = time.time() - start_time
+        return result
+
     try:
         # Use pre-generated mutants if available, otherwise generate on-the-fly
         if "mutants" in sample and sample["mutants"]:
@@ -651,6 +854,8 @@ def evaluate_generated_tests(
                     mutated_code=m["mutated_code"],
                     operator=m["operator"],
                     description=m["description"],
+                    variant_type=m.get("variant_type"),
+                    mutant_category=m.get("mutant_category"),
                 )
                 for m in sample["mutants"]
             ]
@@ -660,6 +865,7 @@ def evaluate_generated_tests(
                 sample["secure_code"],
                 cwe=None,  # Engine already has sample-specific operators
                 max_mutants=max_mutants,
+                allow_additional=False,  # Prevent cross-contamination
             ).mutants
 
         killed = 0
@@ -674,36 +880,32 @@ def evaluate_generated_tests(
 
             if is_killed:
                 killed += 1
-                # Get the first failing test's error for classification
+                # Classify using the BEST kill type across all failing tests.
+                # Priority: semantic > functional > assertion_incidental > crash > other
+                # This prevents a crash in an earlier test from masking a semantic
+                # kill in a later test.
+                _KILL_PRIORITY = {"semantic": 5, "functional": 4, "assertion_incidental": 3, "crash": 2, "other": 1}
+                best_priority = 0
+
                 for test_result in mutant_result.tests:
                     if not test_result.passed and test_result.error:
-                        kill_reason = test_result.error
-                        mock_access = test_result.mock_security_access
-                        # Pass operator and mock_access for observability-aware classification
-                        kill_type = classify_kill(
-                            kill_reason,
+                        candidate_type, candidate_layer = classify_kill(
+                            test_result.error,
                             operator=mutant.operator,
-                            mock_access=mock_access
+                            mock_access=test_result.mock_security_access,
                         )
-                        # Determine which layer triggered the classification
-                        if kill_type == "semantic" and mock_access:
-                            # Check if mock observability triggered it
-                            relevant_mocks = OPERATOR_MOCK_MAPPING.get(mutant.operator, {})
-                            for mock_name, required_attrs in relevant_mocks.items():
-                                accessed = set(mock_access.get(mock_name, []))
-                                if accessed & required_attrs:
-                                    classification_layer = "mock_observability"
-                                    break
-                            if classification_layer is None:
-                                classification_layer = "keyword"
-                        elif kill_type == "semantic":
-                            classification_layer = "keyword"
-                        elif kill_type == "crash":
-                            classification_layer = "crash"
-                        else:
-                            classification_layer = "none"
-                        break
-                # Default if no error found
+                        candidate_priority = _KILL_PRIORITY.get(candidate_type, 0)
+                        if candidate_priority > best_priority:
+                            best_priority = candidate_priority
+                            kill_type = candidate_type
+                            classification_layer = candidate_layer
+                            kill_reason = test_result.error
+                            mock_access = test_result.mock_security_access
+                        # Early exit if we found semantic (best possible)
+                        if kill_type == "semantic":
+                            break
+
+                # Default if no error found in any test
                 if kill_type is None:
                     kill_type = "other"
                     classification_layer = "none"
@@ -720,6 +922,7 @@ def evaluate_generated_tests(
             result["mutant_details"].append({
                 "id": mutant.id,
                 "operator": mutant.operator,
+                "mutant_category": mutant.mutant_category,
                 "killed": is_killed,
                 "kill_type": kill_type,
                 "kill_reason": kill_reason,
@@ -834,6 +1037,8 @@ def evaluate_model(
     by_cwe = aggregate_by_cwe(results)
     by_difficulty = aggregate_by_difficulty(results)
     by_operator = aggregate_by_operator(results)
+    by_source_type = aggregate_by_source_type(results)
+    by_mutant_category = aggregate_by_mutant_category(results)
     survival_analysis = analyze_survival_patterns(results)
     kill_breakdown = calculate_kill_breakdown(results)
     security_precision = calculate_security_precision(results)
@@ -850,16 +1055,20 @@ def evaluate_model(
         "by_cwe": by_cwe,
         "by_difficulty": by_difficulty,
         "by_operator": by_operator,
+        "by_source_type": by_source_type,
+        "by_mutant_category": by_mutant_category,
         "survival_analysis": survival_analysis,
         "kill_breakdown": kill_breakdown,
         "security_precision": security_precision,
         "details": results,
     }
 
-    # Save results
+    # Save results under model-specific subdirectory
     if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, f"{model_name}_results.json")
+        sanitized_name = model_name.replace(":", "_").replace("/", "_")
+        model_dir = os.path.join(output_dir, sanitized_name)
+        os.makedirs(model_dir, exist_ok=True)
+        output_path = os.path.join(model_dir, f"evaluation_results_{time.strftime('%Y%m%d_%H%M%S')}.json")
         with open(output_path, "w") as f:
             json.dump(output, f, indent=2)
         print(f"\nResults saved to: {output_path}")
@@ -904,6 +1113,8 @@ def evaluate_reference_tests(benchmark: List[Dict]) -> Dict[str, Any]:
     by_cwe = aggregate_by_cwe(results)
     by_difficulty = aggregate_by_difficulty(results)
     by_operator = aggregate_by_operator(results)
+    by_source_type = aggregate_by_source_type(results)
+    by_mutant_category = aggregate_by_mutant_category(results)
     survival_analysis = analyze_survival_patterns(results)
     kill_breakdown = calculate_kill_breakdown(results)
     security_precision = calculate_security_precision(results)
@@ -919,6 +1130,8 @@ def evaluate_reference_tests(benchmark: List[Dict]) -> Dict[str, Any]:
         "by_cwe": by_cwe,
         "by_difficulty": by_difficulty,
         "by_operator": by_operator,
+        "by_source_type": by_source_type,
+        "by_mutant_category": by_mutant_category,
         "survival_analysis": survival_analysis,
         "kill_breakdown": kill_breakdown,
         "security_precision": security_precision,

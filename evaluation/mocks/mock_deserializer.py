@@ -40,8 +40,21 @@ class MockPickle:
         """Base exception for pickle errors."""
         pass
 
+    # Security-relevant attributes for observability tracking
+    SECURITY_ATTRS = {"unsafe_load_called", "last_data", "load_count"}
+
     def __init__(self):
+        # Initialize security attribute access tracking
+        object.__setattr__(self, "_accessed_security_attrs", set())
         self.reset()
+
+    def __getattribute__(self, name):
+        """Track access to security-relevant attributes."""
+        value = object.__getattribute__(self, name)
+        if name in MockPickle.SECURITY_ATTRS:
+            accessed = object.__getattribute__(self, "_accessed_security_attrs")
+            accessed.add(name)
+        return value
 
     def reset(self):
         """Reset all state."""
@@ -49,6 +62,10 @@ class MockPickle:
         self.load_count: int = 0
         self.last_data: Optional[bytes] = None
         self.operations: List[str] = []
+
+    def reset_security_tracking(self):
+        """Reset security attribute access tracking."""
+        object.__setattr__(self, "_accessed_security_attrs", set())
 
     def loads(self, data: bytes, **kwargs) -> Any:
         """
@@ -127,8 +144,21 @@ class MockYAML:
     class Loader:
         pass
 
+    # Security-relevant attributes for observability tracking
+    SECURITY_ATTRS = {"unsafe_load_called", "safe_loader_used", "last_data", "load_count"}
+
     def __init__(self):
+        # Initialize security attribute access tracking
+        object.__setattr__(self, "_accessed_security_attrs", set())
         self.reset()
+
+    def __getattribute__(self, name):
+        """Track access to security-relevant attributes."""
+        value = object.__getattribute__(self, name)
+        if name in MockYAML.SECURITY_ATTRS:
+            accessed = object.__getattribute__(self, "_accessed_security_attrs")
+            accessed.add(name)
+        return value
 
     def reset(self):
         """Reset all state."""
@@ -137,6 +167,10 @@ class MockYAML:
         self.load_count: int = 0
         self.last_data: Optional[str] = None
         self.operations: List[str] = []
+
+    def reset_security_tracking(self):
+        """Reset security attribute access tracking."""
+        object.__setattr__(self, "_accessed_security_attrs", set())
 
     def load(self, data: str, Loader=None) -> Any:
         """
@@ -203,11 +237,26 @@ class MockMarshal:
     Mock marshal module - also unsafe for untrusted data.
     """
 
+    SECURITY_ATTRS = {"unsafe_load_called"}
+
     def __init__(self):
+        object.__setattr__(self, "_accessed_security_attrs", set())
         self.reset()
 
     def reset(self):
         self.unsafe_load_called: bool = False
+
+    def reset_security_tracking(self):
+        """Reset security attribute access tracking."""
+        object.__setattr__(self, "_accessed_security_attrs", set())
+
+    def __getattribute__(self, name):
+        """Track access to security-relevant attributes."""
+        value = object.__getattribute__(self, name)
+        if name in MockMarshal.SECURITY_ATTRS:
+            accessed = object.__getattribute__(self, "_accessed_security_attrs")
+            accessed.add(name)
+        return value
 
     def loads(self, data: bytes) -> Any:
         """Mock marshal.loads() - UNSAFE."""

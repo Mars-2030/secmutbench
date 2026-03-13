@@ -34,7 +34,12 @@ class MockHTTPResponse:
 class MockHTTPClient:
     """Mock HTTP client for testing SSRF vulnerabilities."""
 
+    # Security-relevant attributes for observability tracking
+    SECURITY_ATTRS = {"last_url", "ssrf_attempted", "last_method", "last_kwargs"}
+
     def __init__(self):
+        # Initialize security attribute access tracking
+        object.__setattr__(self, "_accessed_security_attrs", set())
         self._allowed_hosts = ["api.example.com", "cdn.example.com", "public.example.com"]
         self._internal_hosts = ["localhost", "127.0.0.1", "192.168.", "10.", "172.16.", "169.254."]
         self._responses = {
@@ -45,15 +50,29 @@ class MockHTTPClient:
         }
         self.last_url = None
         self.last_method = None
+        self.last_kwargs = {}
         self.request_count = 0
         self.ssrf_attempted = False
+
+    def __getattribute__(self, name):
+        """Track access to security-relevant attributes."""
+        value = object.__getattribute__(self, name)
+        if name in MockHTTPClient.SECURITY_ATTRS:
+            accessed = object.__getattribute__(self, "_accessed_security_attrs")
+            accessed.add(name)
+        return value
 
     def reset(self):
         """Reset client state."""
         self.last_url = None
         self.last_method = None
+        self.last_kwargs = {}
         self.request_count = 0
         self.ssrf_attempted = False
+
+    def reset_security_tracking(self):
+        """Reset security attribute access tracking."""
+        object.__setattr__(self, "_accessed_security_attrs", set())
 
     def _is_internal(self, url: str) -> bool:
         """Check if URL targets internal resources."""
@@ -66,6 +85,7 @@ class MockHTTPClient:
         """Perform GET request."""
         self.last_url = url
         self.last_method = "GET"
+        self.last_kwargs = kwargs
         self.request_count += 1
 
         if self._is_internal(url):
@@ -81,6 +101,8 @@ class MockHTTPClient:
         """Perform POST request."""
         self.last_url = url
         self.last_method = "POST"
+        # C8 fix: Include data and json in last_kwargs (were consumed before **kwargs)
+        self.last_kwargs = {**kwargs, 'data': data, 'json': json}
         self.request_count += 1
 
         if self._is_internal(url):
@@ -88,10 +110,51 @@ class MockHTTPClient:
 
         return MockHTTPResponse(200, '{"status": "created"}')
 
+    def put(self, url: str, data: Any = None, json: Any = None, **kwargs) -> MockHTTPResponse:
+        """Perform PUT request (L6 fix)."""
+        self.last_url = url
+        self.last_method = "PUT"
+        self.last_kwargs = {**kwargs, 'data': data, 'json': json}
+        self.request_count += 1
+        if self._is_internal(url):
+            self.ssrf_attempted = True
+        return MockHTTPResponse(200, '{"status": "updated"}')
+
+    def delete(self, url: str, **kwargs) -> MockHTTPResponse:
+        """Perform DELETE request (L6 fix)."""
+        self.last_url = url
+        self.last_method = "DELETE"
+        self.last_kwargs = kwargs
+        self.request_count += 1
+        if self._is_internal(url):
+            self.ssrf_attempted = True
+        return MockHTTPResponse(200, '{"status": "deleted"}')
+
+    def patch(self, url: str, data: Any = None, json: Any = None, **kwargs) -> MockHTTPResponse:
+        """Perform PATCH request (L6 fix)."""
+        self.last_url = url
+        self.last_method = "PATCH"
+        self.last_kwargs = {**kwargs, 'data': data, 'json': json}
+        self.request_count += 1
+        if self._is_internal(url):
+            self.ssrf_attempted = True
+        return MockHTTPResponse(200, '{"status": "patched"}')
+
+    def head(self, url: str, **kwargs) -> MockHTTPResponse:
+        """Perform HEAD request (L6 fix)."""
+        self.last_url = url
+        self.last_method = "HEAD"
+        self.last_kwargs = kwargs
+        self.request_count += 1
+        if self._is_internal(url):
+            self.ssrf_attempted = True
+        return MockHTTPResponse(200, "")
+
     def request(self, method: str, url: str, **kwargs) -> MockHTTPResponse:
         """Perform arbitrary HTTP request."""
         self.last_url = url
         self.last_method = method.upper()
+        self.last_kwargs = kwargs
         self.request_count += 1
 
         if self._is_internal(url):

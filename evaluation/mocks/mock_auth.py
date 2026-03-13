@@ -12,7 +12,12 @@ from typing import Dict, Optional
 class MockAuthenticator:
     """Mock authenticator for testing authentication vulnerabilities."""
 
+    # Security-relevant attributes for observability tracking
+    SECURITY_ATTRS = {"last_username", "last_password", "last_token", "auth_attempts", "failed_attempts"}
+
     def __init__(self):
+        # Initialize security attribute access tracking
+        object.__setattr__(self, "_accessed_security_attrs", set())
         self._valid_users = {
             "admin": {"password_hash": "5f4dcc3b5aa765d61d8327deb882cf99", "role": "admin"},
             "user1": {"password_hash": "ee11cbb19052e40b07aac0ca060c23ee", "role": "user"},
@@ -29,6 +34,14 @@ class MockAuthenticator:
         self.auth_attempts = 0
         self.failed_attempts = 0
 
+    def __getattribute__(self, name):
+        """Track access to security-relevant attributes."""
+        value = object.__getattribute__(self, name)
+        if name in MockAuthenticator.SECURITY_ATTRS:
+            accessed = object.__getattribute__(self, "_accessed_security_attrs")
+            accessed.add(name)
+        return value
+
     def reset(self):
         """Reset authenticator state."""
         self.last_username = None
@@ -36,6 +49,10 @@ class MockAuthenticator:
         self.last_token = None
         self.auth_attempts = 0
         self.failed_attempts = 0
+
+    def reset_security_tracking(self):
+        """Reset security attribute access tracking."""
+        object.__setattr__(self, "_accessed_security_attrs", set())
 
     def verify_password(self, username: str, password: str) -> bool:
         """Verify username/password combination."""

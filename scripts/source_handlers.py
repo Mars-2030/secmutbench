@@ -85,6 +85,14 @@ CWE_NAMES = {
     "CWE-918": "Server-Side Request Forgery (SSRF)",
     "CWE-942": "Permissive Cross-domain Policy",
     "CWE-1336": "Improper Neutralization of Template Expressions",
+    "CWE-95": "Eval Injection",
+    "CWE-113": "HTTP Response Splitting",
+    "CWE-117": "Improper Output Neutralization for Logs",
+    "CWE-326": "Inadequate Encryption Strength",
+    "CWE-347": "Improper Verification of Cryptographic Signature",
+    "CWE-400": "Uncontrolled Resource Consumption",
+    "CWE-732": "Incorrect Permission Assignment for Critical Resource",
+    "CWE-1333": "Inefficient Regular Expression Complexity",
 }
 
 
@@ -204,12 +212,214 @@ class SecurityEvalHandler(BaseSourceHandler):
         return sorted(set(s.cwe for s in all_samples))
 
 
+# =============================================================================
+# Snippet Wrapping Helper (Phase 6 - CyberSecEval Fix)
+# =============================================================================
+
+def wrap_snippet_in_function(code: str, entry_point: str = "vulnerable_function") -> Tuple[str, str]:
+    """
+    Wrap a code snippet in a function for testing.
+
+    CyberSecEval and some SecurityEval samples contain code snippets
+    without function definitions. This wraps them in a testable function.
+
+    Args:
+        code: Code snippet (may or may not have function definition)
+        entry_point: Name for the wrapper function if needed
+
+    Returns:
+        Tuple of (wrapped_code, actual_entry_point)
+    """
+    if not code or not code.strip():
+        return code, entry_point
+
+    # Check if it already has a function definition
+    func_match = re.search(r'^def\s+(\w+)\s*\(', code, re.MULTILINE)
+    if func_match:
+        return code, func_match.group(1)
+
+    # Check if it's a class
+    if re.search(r'^class\s+\w+', code, re.MULTILINE):
+        return code, entry_point
+
+    # Detect imports at the top
+    lines = code.split('\n')
+    import_lines = []
+    code_lines = []
+    in_imports = True
+
+    for line in lines:
+        stripped = line.strip()
+        if in_imports and (stripped.startswith('import ') or stripped.startswith('from ')):
+            import_lines.append(line)
+        elif in_imports and not stripped:
+            import_lines.append(line)  # Keep blank lines in import section
+        else:
+            in_imports = False
+            code_lines.append(line)
+
+    # Detect what parameters the snippet needs
+    # Look for free variables that appear to be user input
+    tainted_vars = set()
+    for var in ['user_input', 'input', 'data', 'payload', 'query', 'path', 'filename',
+                'url', 'command', 'xml', 'content', 'text', 'message', 'username']:
+        if re.search(rf'\b{var}\b', '\n'.join(code_lines)):
+            tainted_vars.add(var)
+
+    # Build parameter list
+    if tainted_vars:
+        params = ', '.join(sorted(tainted_vars))
+    else:
+        params = 'user_input'  # Default parameter
+
+    # Indent the code body
+    indented_body = '\n'.join('    ' + line if line.strip() else '' for line in code_lines)
+
+    # Assemble wrapped function
+    imports_str = '\n'.join(import_lines) + '\n\n' if import_lines else ''
+    wrapped = f'''{imports_str}def {entry_point}({params}):
+    """Wrapped code snippet for testing."""
+{indented_body}
+'''
+
+    return wrapped.strip(), entry_point
+
+
+def _is_python_snippet(code: str) -> bool:
+    """
+    Check if code is a Python snippet (with or without function definition).
+
+    More permissive than _is_python_code to allow code snippets.
+    """
+    if not code or not code.strip():
+        return False
+
+    # Reject common non-Python patterns
+    non_python_patterns = [
+        'system("',  # Perl/shell
+        '`',  # Backtick execution
+        '$_',  # Perl variable
+        '@_',  # Perl array
+        'my $',  # Perl variable
+        '#!/bin/bash',  # Bash shebang
+        '#!/bin/sh',  # Shell shebang
+        'getcwd()',  # Perl function
+        'print "',  # Perl print without parentheses
+    ]
+    for pattern in non_python_patterns:
+        if pattern in code:
+            return False
+
+    # Check for Python indicators
+    python_patterns = [
+        r'\bdef\s+\w+\s*\(',  # Function definition
+        r'\bimport\s+\w+',  # Import statement
+        r'\bfrom\s+\w+\s+import',  # From import
+        r'\bif\s+.*:',  # If statement
+        r'\bfor\s+\w+\s+in\s+',  # For loop
+        r'\bwhile\s+.*:',  # While loop
+        r'\breturn\s+',  # Return statement
+        r'\bclass\s+\w+',  # Class definition
+        r'print\s*\(',  # Python 3 print
+        r'\bwith\s+\w+',  # With statement
+    ]
+
+    return any(re.search(p, code) for p in python_patterns)
+
+
+def _has_undefined_context_variables(code: str) -> bool:
+    """
+    Check if code snippet has undefined context variables from original file.
+
+    CyberSecEval samples are often extracted from larger files and reference
+    variables that were defined elsewhere (config objects, file paths, etc.).
+    These samples are not testable without the original context.
+
+    Returns:
+        True if code has problematic undefined variables, False otherwise.
+    """
+    # Common context variables that indicate extracted snippets
+    context_var_patterns = [
+        # Configuration objects
+        r'\bconfig\.\w+',  # config.SETTING
+        r'\bsettings\.\w+',  # settings.VALUE
+        r'\bCONFIG\[',  # CONFIG['key']
+
+        # File paths from original context
+        r'\b(src_dir|dest_dir|work_dir|base_dir|root_dir|output_dir)\b',
+        r'\b(test_dir|build_dir|data_dir|log_dir|tmp_dir)\b',
+
+        # Command/script variables from original context
+        r'\b(build_cmd|run_cmd|exec_cmd|shell_cmd)\b',
+        r'\b(dep_dir|lib_dir|bin_dir)\b',
+
+        # Revision/version control context
+        r'\brev\b(?!\s*=)',  # rev used but not defined
+
+        # Loop variables used outside loops
+        r'\bcloud_function\b',
+        r'\bfunction_names\b',
+
+        # Database/connection context
+        r'\b(db_conn|connection|cursor)\b(?!\s*=)',
+
+        # Logger objects (usually defined at module level)
+        r'\blogger\.\w+',  # logger.debug(), logger.info()
+
+        # File handles used without assignment
+        r'\bp\.readline',  # p.readline() where p is undefined
+        r'\bf\.read',  # f.read() where f is undefined
+
+        # LSF/job scheduler context
+        r'\blsfJobID\b',
+        r'\bjob\s*,\s*task\s*=',
+
+        # Perl-style print without parentheses (indicates non-Python code)
+        r'^print\s+["\'][^"\']+["\']\s*$',
+    ]
+
+    for pattern in context_var_patterns:
+        if re.search(pattern, code):
+            return True
+
+    # Check for variables used before definition (simple heuristic)
+    # Look for assignments vs usages
+    lines = code.split('\n')
+    defined_vars = set()
+
+    for line in lines:
+        # Skip comments and empty lines
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+
+        # Find variable definitions (simple assignment)
+        assign_match = re.match(r'^(\w+)\s*=', stripped)
+        if assign_match:
+            defined_vars.add(assign_match.group(1))
+
+    # Check for common problematic patterns: using config-like variables
+    # that aren't defined in the snippet
+    problematic_vars = ['config', 'settings', 'options', 'args', 'params']
+    for var in problematic_vars:
+        # Used but not defined
+        if re.search(rf'\b{var}\b', code) and var not in defined_vars:
+            # Check it's not a function parameter
+            if not re.search(rf'def\s+\w+\s*\([^)]*\b{var}\b', code):
+                return True
+
+    return False
+
+
 class CyberSecEvalHandler(BaseSourceHandler):
     """
     Handler for CyberSecEval dataset from Meta/HuggingFace.
 
     Dataset: walledai/CyberSecEval or facebook/CyberSecEval
     Contains: Security-focused code completion prompts
+
+    Enhanced to handle code snippets without function definitions
+    by wrapping them in testable functions.
     """
 
     DATASET_NAME = "walledai/CyberSecEval"
@@ -262,8 +472,17 @@ class CyberSecEvalHandler(BaseSourceHandler):
                 return json.load(f)
         return []
 
+    def _is_python_code(self, code: str) -> bool:
+        """Check if code is Python (not Perl, shell, etc.)."""
+        # Use the enhanced snippet detection
+        return _is_python_snippet(code)
+
     def load_samples(self) -> List[ExternalSample]:
-        """Load all CyberSecEval samples."""
+        """Load all CyberSecEval samples.
+
+        Enhanced to handle code snippets without function definitions
+        by wrapping them in testable functions.
+        """
         if self._samples is not None:
             return self._samples
 
@@ -272,23 +491,60 @@ class CyberSecEvalHandler(BaseSourceHandler):
             raw_samples = self._download_dataset()
 
         self._samples = []
+        wrapped_count = 0
+
         for i, raw in enumerate(raw_samples):
             cwe = raw.get("cwe_identifier", "")
             if cwe:
                 cwe = normalize_cwe(cwe)
                 code = raw.get("origin_code", "") or raw.get("prompt", "")
-                if code:
-                    self._samples.append(ExternalSample(
-                        id=hashlib.md5(f"cse_{i}_{cwe}".encode()).hexdigest()[:12],
-                        cwe=cwe,
-                        cwe_name=CWE_NAMES.get(cwe, raw.get("cwe_name", "Unknown")),
-                        source="CyberSecEval",
-                        original_id=raw.get("pattern_id", f"cse_{i}"),
-                        prompt=raw.get("prompt", ""),
-                        code=code,
-                        language="python",
-                        metadata=raw,
-                    ))
+
+                # Check if it's Python
+                if not code or not self._is_python_code(code):
+                    continue
+
+                # Check if code needs wrapping (no function definition)
+                original_code = code
+                entry_point = f"cybersec_{i}"
+
+                if 'def ' not in code:
+                    # Wrap snippet in function
+                    code, entry_point = wrap_snippet_in_function(code, entry_point)
+                    wrapped_count += 1
+                else:
+                    # Extract entry point from existing function
+                    func_match = re.search(r'def\s+(\w+)\s*\(', code)
+                    if func_match:
+                        entry_point = func_match.group(1)
+
+                # Verify wrapped code compiles
+                try:
+                    compile(code, '<wrapped>', 'exec')
+                except SyntaxError:
+                    continue  # Skip invalid code
+
+                # Filter out samples with undefined context variables
+                if _has_undefined_context_variables(original_code):
+                    continue  # Skip samples needing external context
+
+                self._samples.append(ExternalSample(
+                    id=hashlib.md5(f"cse_{i}_{cwe}".encode()).hexdigest()[:12],
+                    cwe=cwe,
+                    cwe_name=CWE_NAMES.get(cwe, raw.get("cwe_name", "Unknown")),
+                    source="CyberSecEval",
+                    original_id=raw.get("pattern_id", f"cse_{i}"),
+                    prompt=raw.get("prompt", ""),
+                    code=code,
+                    language="python",
+                    metadata={
+                        **raw,
+                        "entry_point": entry_point,
+                        "was_wrapped": code != original_code,
+                    },
+                ))
+
+        if wrapped_count > 0:
+            print(f"  Wrapped {wrapped_count} code snippets in functions")
 
         return self._samples
 
@@ -617,11 +873,28 @@ class SecCodePLTHandler(BaseSourceHandler):
             if not vulnerable_code or not patched_code:
                 continue
 
-            insecure_code = code_before + vulnerable_code + code_after
-            secure_code = code_before + patched_code + code_after
+            # Assemble with proper newlines between fragments
+            # Ensure each fragment ends cleanly before concatenation
+            def safe_concat(*parts):
+                """Concatenate code fragments with proper newline handling."""
+                result = []
+                for part in parts:
+                    if not part:
+                        continue
+                    # Ensure fragment doesn't start/end with excess newlines
+                    part = part.rstrip('\n')
+                    if result and not result[-1].endswith('\n'):
+                        result.append('\n')
+                    result.append(part)
+                return ''.join(result)
 
             # Setup code (imports, global variables the function depends on)
+            # MUST be included before the function code
             setup_code = unittest_data.get("setup", "")
+
+            # Include setup_code in assembled code (fixes NameError for BLOG_FORMAT, etc.)
+            insecure_code = safe_concat(setup_code, code_before, vulnerable_code, code_after)
+            secure_code = safe_concat(setup_code, code_before, patched_code, code_after)
             function_name = task_desc.get("function_name", "")
             description = task_desc.get("description", "")
             security_policy = task_desc.get("security_policy", "")
@@ -650,6 +923,215 @@ class SecCodePLTHandler(BaseSourceHandler):
             ))
 
         print(f"  Loaded {len(self._samples)} samples (skipped {skipped_cwe} unsupported CWEs, {skipped_deps} with external deps)")
+        return self._samples
+
+    def extract_by_cwe(self, cwe_id: str) -> List[ExternalSample]:
+        """Extract samples for a specific CWE."""
+        cwe_normalized = normalize_cwe(cwe_id)
+        all_samples = self.load_samples()
+        return [s for s in all_samples if s.cwe == cwe_normalized]
+
+    def get_available_cwes(self) -> List[str]:
+        """Get list of CWEs available in this dataset."""
+        all_samples = self.load_samples()
+        return sorted(set(s.cwe for s in all_samples))
+
+
+class CWEvalHandler(BaseSourceHandler):
+    """
+    Handler for CWEval dataset (expert-verified task/test pairs).
+
+    Local files: data/raw/CWE-eval/cwe_*_task.py and cwe_*_test.py
+    Contains: 25 expert-verified pairs across 20 CWEs with unsafe variants.
+    Each pair produces one sample per unsafe variant (~26 samples after filtering).
+    """
+
+    # CWEs without mutation operators — skip these
+    SKIP_CWES = {"329", "377", "760", "943"}
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        self.cache_dir = Path(cache_dir) if cache_dir else Path("data/raw")
+        self.cweval_dir = self.cache_dir / "CWE-eval"
+        self._samples: Optional[List[ExternalSample]] = None
+
+    def _parse_task_file(self, filepath: Path) -> Dict[str, Any]:
+        """Parse a CWEval task file, extracting function name, imports, prompt, and secure code."""
+        content = filepath.read_text()
+        lines = content.split("\n")
+
+        pair_id = filepath.stem.replace("_task", "")
+
+        # Find function definition
+        func_start_line = None
+        func_name = None
+        for i, line in enumerate(lines):
+            match = re.match(r'^def\s+(\w+)\s*\(', line)
+            if match:
+                func_start_line = i
+                func_name = match.group(1)
+                break
+
+        if func_start_line is None:
+            raise ValueError(f"No function definition found in {filepath}")
+
+        module_imports = "\n".join(lines[:func_start_line]).strip()
+
+        # Find BEGIN SOLUTION marker
+        solution_line = None
+        for i, line in enumerate(lines):
+            if "# BEGIN SOLUTION" in line:
+                solution_line = i
+                break
+
+        if solution_line is None:
+            raise ValueError(f"No # BEGIN SOLUTION marker in {filepath}")
+
+        # Prompt = function signature + docstring
+        prompt_lines = lines[func_start_line:solution_line]
+        prompt = "\n".join(prompt_lines).rstrip()
+
+        # Secure code = imports + full function
+        func_lines = lines[func_start_line:]
+        while func_lines and not func_lines[-1].strip():
+            func_lines.pop()
+
+        if module_imports:
+            secure_code = module_imports + "\n\n\n" + "\n".join(func_lines)
+        else:
+            secure_code = "\n".join(func_lines)
+
+        return {
+            "pair_id": pair_id,
+            "func_name": func_name,
+            "module_imports": module_imports,
+            "prompt": prompt,
+            "secure_code": secure_code,
+        }
+
+    def _parse_test_file(self, filepath: Path) -> Dict[str, Any]:
+        """Parse a CWEval test file, extracting CWE and unsafe function variants."""
+        content = filepath.read_text()
+        lines = content.split("\n")
+
+        # Extract CWE from filename
+        cwe_id = None
+        fname_match = re.match(r'cwe_(\d+)', filepath.stem)
+        if fname_match:
+            cwe_id = f"CWE-{fname_match.group(1)}"
+
+        # Fallback: extract from docstring
+        if cwe_id is None:
+            for line in lines[:10]:
+                cwe_match = re.search(r'CWE-(\d+)', line)
+                if cwe_match:
+                    cwe_id = f"CWE-{cwe_match.group(1)}"
+                    break
+
+        # Parse AST to find unsafe functions
+        import ast as ast_mod
+        try:
+            tree = ast_mod.parse(content)
+        except SyntaxError as e:
+            raise ValueError(f"Syntax error in {filepath}: {e}")
+
+        unsafe_functions = []
+        for node in ast_mod.iter_child_nodes(tree):
+            if isinstance(node, ast_mod.FunctionDef) and "unsafe" in node.name:
+                if node.name.startswith("test_"):
+                    continue
+                start = node.lineno - 1
+                end = node.end_lineno
+                func_source = "\n".join(lines[start:end])
+                unsafe_functions.append({
+                    "name": node.name,
+                    "source": func_source,
+                })
+
+        return {
+            "cwe_id": cwe_id,
+            "unsafe_functions": unsafe_functions,
+        }
+
+    def load_samples(self) -> List[ExternalSample]:
+        """Load all CWEval samples from local task/test file pairs."""
+        if self._samples is not None:
+            return self._samples
+
+        self._samples = []
+
+        if not self.cweval_dir.exists():
+            print(f"CWEval directory not found at {self.cweval_dir}")
+            return self._samples
+
+        task_files = sorted(self.cweval_dir.glob("cwe_*_task.py"))
+        if not task_files:
+            print(f"No CWEval task files found in {self.cweval_dir}")
+            return self._samples
+
+        skipped_cwe = 0
+
+        for task_path in task_files:
+            pair_id = task_path.stem.replace("_task", "")
+            test_path = task_path.parent / f"{pair_id}_test.py"
+
+            if not test_path.exists():
+                continue
+
+            try:
+                task_data = self._parse_task_file(task_path)
+                test_data = self._parse_test_file(test_path)
+            except (ValueError, SyntaxError):
+                continue
+
+            cwe_id = normalize_cwe(test_data["cwe_id"]) if test_data["cwe_id"] else None
+            if not cwe_id:
+                continue
+
+            # Skip CWEs without mutation operators
+            cwe_num = cwe_id.replace("CWE-", "")
+            if cwe_num in self.SKIP_CWES:
+                skipped_cwe += 1
+                continue
+
+            func_name = task_data["func_name"]
+
+            # Create one sample per unsafe variant
+            for variant_idx, uf in enumerate(test_data["unsafe_functions"]):
+                unsafe_name = uf["name"]
+
+                # Assemble insecure code: rename unsafe func to original name
+                renamed_source = re.sub(
+                    rf'def\s+{re.escape(unsafe_name)}\s*\(',
+                    f'def {func_name}(',
+                    uf["source"],
+                )
+                if task_data["module_imports"]:
+                    insecure_code = task_data["module_imports"] + "\n\n\n" + renamed_source
+                else:
+                    insecure_code = renamed_source
+
+                variant_suffix = unsafe_name.replace(func_name, "").strip("_") or "unsafe"
+                sample_id_str = f"cweval_{pair_id}_{variant_suffix}_{variant_idx}"
+
+                self._samples.append(ExternalSample(
+                    id=hashlib.md5(sample_id_str.encode()).hexdigest()[:12],
+                    cwe=cwe_id,
+                    cwe_name=CWE_NAMES.get(cwe_id, "Unknown"),
+                    source="CWEval",
+                    original_id=pair_id,
+                    prompt=task_data["prompt"],
+                    code=insecure_code,
+                    language="python",
+                    metadata={
+                        "secure_code": task_data["secure_code"],
+                        "insecure_code": insecure_code,
+                        "function_name": func_name,
+                        "pair_id": pair_id,
+                        "unsafe_variant": unsafe_name,
+                    },
+                ))
+
+        print(f"  Loaded {len(self._samples)} CWEval samples (skipped {skipped_cwe} unsupported CWEs)")
         return self._samples
 
     def extract_by_cwe(self, cwe_id: str) -> List[ExternalSample]:

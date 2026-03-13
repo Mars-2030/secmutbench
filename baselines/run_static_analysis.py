@@ -41,25 +41,24 @@ from evaluation.version import get_version_info
 
 # CWEs that Bandit HAS rules for (syntax/pattern-based detection possible)
 STATIC_ANALYZABLE_CWES = {
+    "CWE-22",   # Path Traversal - Bandit B108 (hardcoded tmp) + Semgrep path rules
     "CWE-78",   # Command Injection - shell=True pattern
     "CWE-89",   # SQL Injection - string formatting in queries
     "CWE-94",   # Code Injection - eval/exec usage
-    "CWE-95",   # Code Injection via eval - eval/exec usage (alias of 94)
-    "CWE-327",  # Weak Crypto - MD5/SHA1 usage
-    "CWE-328",  # Weak Hash - reversible hash
-    "CWE-338",  # Weak PRNG - random module usage
-    "CWE-502",  # Deserialization - pickle/yaml.load usage
-    "CWE-611",  # XXE - xml parsing without defused
-    "CWE-798",  # Hardcoded Credentials - password in string
-    "CWE-295",  # Certificate Validation - verify=False pattern
-    "CWE-400",  # ReDoS - nested quantifiers (partial, with semgrep)
-    "CWE-1333", # ReDoS - inefficient regex (alias of 400)
+    "CWE-295",  # Certificate Validation - verify=False pattern (Bandit B501)
+    "CWE-319",  # Cleartext Transmission - Semgrep detects http:// URLs (100%)
+    "CWE-326",  # Inadequate Encryption Strength - Semgrep detects weak key sizes (100%)
+    "CWE-327",  # Weak Crypto - MD5/SHA1 usage (Bandit B303/B324)
+    "CWE-338",  # Weak PRNG - random module usage (Bandit B311)
+    "CWE-502",  # Deserialization - pickle/yaml.load usage (Bandit B301/B506)
+    "CWE-611",  # XXE - xml parsing without defused (Bandit B313-B320)
+    "CWE-798",  # Hardcoded Credentials - password in string (Bandit B105-B107)
+    "CWE-1333", # ReDoS - inefficient regex (alias of 400, Semgrep only)
 }
 
 # CWEs that require dynamic/semantic analysis (logic flaws, missing controls)
 DYNAMIC_ONLY_CWES = {
     "CWE-20",   # Input Validation - logic flaw, no syntax pattern
-    "CWE-22",   # Path Traversal - open() is normal, validation is logic
     "CWE-79",   # XSS - missing escaping in custom functions
     "CWE-287",  # Auth Bypass - logic flaw
     "CWE-306",  # Missing Auth - absence of decorator/check
@@ -68,7 +67,7 @@ DYNAMIC_ONLY_CWES = {
     "CWE-639",  # IDOR - authorization logic
     "CWE-918",  # SSRF - URL validation logic (partial static support)
     "CWE-1004", # HttpOnly Cookie - config issue
-    "CWE-319",  # Cleartext Transmission - config issue
+    # CWE-319 moved to static (Semgrep detects http:// URLs)
     "CWE-942",  # CORS - config issue
     "CWE-1336", # SSTI - context-dependent
     # === New CWEs added in v2.5.0 ===
@@ -76,12 +75,24 @@ DYNAMIC_ONLY_CWES = {
     "CWE-209",  # Information Exposure - error handling logic
     "CWE-862",  # Missing Authorization - absence of checks
     "CWE-778",  # Insufficient Logging - absence of logging
+    # === New CWEs added in v2.8.0 ===
+    "CWE-95",   # Code Injection via eval - Bandit B307 detects eval but miss contextual patterns
+    "CWE-117",  # Log Injection - missing log sanitization
+    # CWE-326 moved to static (Semgrep detects weak key sizes)
+    "CWE-328",  # Weak Hash - Bandit maps to CWE-327 not CWE-328
+    "CWE-400",  # ReDoS - Bandit has no regex complexity analysis (Semgrep partial)
+    "CWE-434",  # Unrestricted Upload - file validation logic
+    "CWE-643",  # XPath Injection - query construction logic
+    "CWE-732",  # Permission Assignment - Bandit B103 exists but insecure_code doesn't use chmod()
+    "CWE-74",   # Injection (general) - context-dependent
+    "CWE-863",  # Incorrect Authorization - logic flaw
+    "CWE-915",  # Mass Assignment - missing attribute whitelisting
 }
 
 # Why each dynamic CWE can't be detected by static analysis
 DYNAMIC_CWE_REASONS = {
     "CWE-20": "Input validation is a logic property - no syntax pattern for 'missing validation'",
-    "CWE-22": "Path traversal uses normal open()/Path operations - vulnerability is missing checks",
+
     "CWE-79": "XSS in custom render functions - static tools can't know what needs escaping",
     "CWE-287": "Authentication bypass is a logic flaw - correct code structure, wrong logic",
     "CWE-306": "Missing authentication = absence of code - can't detect what's not there",
@@ -90,7 +101,7 @@ DYNAMIC_CWE_REASONS = {
     "CWE-639": "IDOR requires understanding ownership model - semantic, not syntactic",
     "CWE-918": "SSRF URL validation is logic - requests.get() is normal usage",
     "CWE-1004": "Cookie flags are configuration - requires understanding security requirements",
-    "CWE-319": "TLS configuration - requires understanding deployment context",
+    # CWE-319 moved to static (Semgrep detects)
     "CWE-942": "CORS policy is configuration - requires understanding trust model",
     "CWE-1336": "SSTI depends on template context - requires data flow analysis",
     # === New CWEs added in v2.5.0 ===
@@ -98,6 +109,18 @@ DYNAMIC_CWE_REASONS = {
     "CWE-209": "Error exposure is about what info is logged - requires understanding sensitivity",
     "CWE-862": "Missing authorization = absence of checks - can't detect what's not there",
     "CWE-778": "Insufficient logging = absence of audit code - can't detect what's not there",
+    # === New CWEs added in v2.8.0 ===
+    "CWE-95": "Bandit detects eval() but misses contextual code injection patterns (e.g., AST filtering)",
+    "CWE-117": "Log injection requires understanding what data reaches log calls",
+    # CWE-326 moved to static (Semgrep detects)
+    "CWE-328": "Bandit maps weak hash to CWE-327 not CWE-328; no separate B-rule for CWE-328",
+    "CWE-400": "ReDoS requires regex complexity analysis - Bandit lacks this capability",
+    "CWE-434": "File upload validation is logic - checking extension/type is semantic",
+    "CWE-643": "XPath injection depends on query construction context",
+    "CWE-732": "Bandit B103 detects chmod() but benchmark insecure_code uses other permission patterns",
+    "CWE-74": "General injection is context-dependent - requires data flow analysis",
+    "CWE-863": "Incorrect authorization is a logic flaw - correct structure, wrong checks",
+    "CWE-915": "Mass assignment requires understanding object attribute model",
 }
 
 
@@ -329,6 +352,7 @@ class BanditRunner:
             "sample_id": sample["id"],
             "cwe": sample["cwe"],
             "difficulty": sample.get("difficulty", "unknown"),
+            "source_type": sample.get("source_type", "unknown"),
         }
 
         if analyze_secure and "secure_code" in sample:
@@ -362,17 +386,18 @@ class BanditRunner:
 # =============================================================================
 
 class SemgrepRunner:
-    """Run Semgrep static analysis on code samples."""
+    """Run Semgrep static analysis on code samples.
+
+    Uses batch mode: writes all files to a single temp dir, runs semgrep once,
+    then distributes results by filename. This avoids the ~3s/file overhead of
+    spawning a new semgrep process per file.
+    """
 
     def __init__(self, ruleset: str = "p/python"):
-        """
-        Initialize Semgrep runner.
-
-        Args:
-            ruleset: Semgrep ruleset to use
-        """
         self.ruleset = ruleset
         self._check_semgrep_installed()
+        # Cache for batch results: filename -> list of raw semgrep result dicts
+        self._batch_cache: Dict[str, List[Dict]] = {}
 
     def _check_semgrep_installed(self):
         """Verify Semgrep is installed."""
@@ -389,66 +414,93 @@ class SemgrepRunner:
                 "Semgrep is not installed. Install with: pip install semgrep"
             )
 
-    def analyze_code(self, code: str, filename: str = "target.py") -> Dict[str, Any]:
+    def batch_analyze(self, samples: List[Dict], verbose: bool = False) -> None:
+        """Write all sample files to a temp dir and run semgrep once.
+
+        Populates self._batch_cache so analyze_sample() can return results
+        without spawning a subprocess per file.
         """
-        Run Semgrep on a code snippet.
+        self._batch_cache = {}
+        self._batch_tmpdir = tempfile.mkdtemp(prefix="semgrep_batch_")
 
-        Args:
-            code: Python source code to analyze
-            filename: Virtual filename for the code
+        for sample in samples:
+            sid = sample["id"]
+            if "secure_code" in sample:
+                fname = f"{sid}_secure.py"
+                with open(os.path.join(self._batch_tmpdir, fname), "w") as f:
+                    f.write(sample["secure_code"])
+            if "insecure_code" in sample:
+                fname = f"{sid}_insecure.py"
+                with open(os.path.join(self._batch_tmpdir, fname), "w") as f:
+                    f.write(sample["insecure_code"])
 
-        Returns:
-            Dict with findings and metadata
-        """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            filepath = os.path.join(tmpdir, filename)
-            with open(filepath, "w") as f:
-                f.write(code)
+        if verbose:
+            n_files = len(os.listdir(self._batch_tmpdir))
+            print(f"  Semgrep batch: scanning {n_files} files in one pass...")
 
-            # Run Semgrep with JSON output
-            cmd = [
-                "semgrep",
-                "--config", self.ruleset,
-                "--json",
-                "--quiet",
-                filepath,
-            ]
+        cmd = [
+            "semgrep",
+            "--config", self.ruleset,
+            "--json",
+            "--quiet",
+            self._batch_tmpdir,
+        ]
 
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-            )
+        result = subprocess.run(cmd, capture_output=True, text=True)
 
-            # Parse JSON output
-            try:
-                output = json.loads(result.stdout) if result.stdout else {}
-            except json.JSONDecodeError:
-                output = {"errors": [result.stderr]}
+        try:
+            output = json.loads(result.stdout) if result.stdout else {}
+        except json.JSONDecodeError:
+            output = {"errors": [result.stderr]}
 
-            return self._process_semgrep_output(output)
+        # Group findings by filename
+        for finding in output.get("results", []):
+            fpath = finding.get("path", "")
+            fname = os.path.basename(fpath)
+            self._batch_cache.setdefault(fname, []).append(finding)
 
-    def _process_semgrep_output(self, output: Dict) -> Dict[str, Any]:
-        """Process Semgrep JSON output into standardized format."""
+        if verbose:
+            total_findings = sum(len(v) for v in self._batch_cache.values())
+            print(f"  Semgrep batch: {total_findings} findings across "
+                  f"{len(self._batch_cache)} files")
+
+        # Clean up
+        import shutil
+        shutil.rmtree(self._batch_tmpdir, ignore_errors=True)
+
+    @staticmethod
+    def _normalize_cwe(raw_cwe: str) -> Optional[str]:
+        """Normalize CWE strings like 'CWE-327: Use of ...' to 'CWE-327'."""
+        if not raw_cwe:
+            return None
+        import re as _re
+        m = _re.search(r'CWE-(\d+)', raw_cwe)
+        if m:
+            return f"CWE-{m.group(1)}"
+        # Bare number
+        m = _re.match(r'^\d+$', raw_cwe.strip())
+        if m:
+            return f"CWE-{raw_cwe.strip()}"
+        return None
+
+    def _process_findings(self, raw_findings: List[Dict]) -> Dict[str, Any]:
+        """Process a list of raw semgrep result dicts into standardized format."""
         findings = []
         cwes_found = set()
 
-        for result in output.get("results", []):
-            # Extract CWE from metadata if present
+        for result in raw_findings:
             metadata = result.get("extra", {}).get("metadata", {})
             cwe = None
 
-            # Check various metadata fields for CWE
             if "cwe" in metadata:
                 cwe_data = metadata["cwe"]
                 if isinstance(cwe_data, list) and cwe_data:
-                    cwe = cwe_data[0] if isinstance(cwe_data[0], str) else str(cwe_data[0])
+                    raw = cwe_data[0] if isinstance(cwe_data[0], str) else str(cwe_data[0])
                 elif isinstance(cwe_data, str):
-                    cwe = cwe_data
-
-            # Normalize CWE format
-            if cwe and not cwe.startswith("CWE-"):
-                cwe = f"CWE-{cwe}"
+                    raw = cwe_data
+                else:
+                    raw = None
+                cwe = self._normalize_cwe(raw) if raw else None
 
             finding = {
                 "rule_id": result.get("check_id", ""),
@@ -460,7 +512,6 @@ class SemgrepRunner:
                 "metadata": metadata,
             }
             findings.append(finding)
-
             if cwe:
                 cwes_found.add(cwe)
 
@@ -470,8 +521,32 @@ class SemgrepRunner:
             "findings": findings,
             "finding_count": len(findings),
             "cwes_found": sorted(list(cwes_found)),
-            "errors": output.get("errors", []),
+            "errors": [],
         }
+
+    def analyze_code(self, code: str, filename: str = "target.py") -> Dict[str, Any]:
+        """Run Semgrep on a single code snippet (fallback, slow path)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filepath = os.path.join(tmpdir, filename)
+            with open(filepath, "w") as f:
+                f.write(code)
+
+            cmd = [
+                "semgrep",
+                "--config", self.ruleset,
+                "--json",
+                "--quiet",
+                filepath,
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True)
+
+            try:
+                output = json.loads(result.stdout) if result.stdout else {}
+            except json.JSONDecodeError:
+                output = {"errors": [result.stderr]}
+
+            return self._process_findings(output.get("results", []))
 
     def analyze_sample(
         self,
@@ -479,36 +554,32 @@ class SemgrepRunner:
         analyze_secure: bool = True,
         analyze_insecure: bool = True,
     ) -> Dict[str, Any]:
-        """
-        Analyze a benchmark sample with Semgrep.
+        """Analyze a benchmark sample. Uses batch cache if available."""
+        sid = sample["id"]
 
-        Args:
-            sample: Benchmark sample dict
-            analyze_secure: Whether to analyze secure code
-            analyze_insecure: Whether to analyze insecure code
-
-        Returns:
-            Dict with analysis results
-        """
         result = {
-            "sample_id": sample["id"],
+            "sample_id": sid,
             "cwe": sample["cwe"],
             "difficulty": sample.get("difficulty", "unknown"),
+            "source_type": sample.get("source_type", "unknown"),
         }
 
         if analyze_secure and "secure_code" in sample:
-            result["secure_analysis"] = self.analyze_code(
-                sample["secure_code"],
-                f"{sample['id']}_secure.py"
-            )
+            fname = f"{sid}_secure.py"
+            if fname in self._batch_cache:
+                result["secure_analysis"] = self._process_findings(self._batch_cache[fname])
+            else:
+                result["secure_analysis"] = self.analyze_code(
+                    sample["secure_code"], fname)
 
         if analyze_insecure and "insecure_code" in sample:
-            result["insecure_analysis"] = self.analyze_code(
-                sample["insecure_code"],
-                f"{sample['id']}_insecure.py"
-            )
+            fname = f"{sid}_insecure.py"
+            if fname in self._batch_cache:
+                result["insecure_analysis"] = self._process_findings(self._batch_cache[fname])
+            else:
+                result["insecure_analysis"] = self.analyze_code(
+                    sample["insecure_code"], fname)
 
-        # Determine if Semgrep detected the vulnerability
         if "insecure_analysis" in result:
             target_cwe = sample["cwe"]
             found_cwes = result["insecure_analysis"]["cwes_found"]
@@ -580,14 +651,18 @@ def run_static_analysis_baseline(
     if not bandit_runner and not semgrep_runner:
         raise RuntimeError("No static analysis tools available")
 
+    # Semgrep batch: scan all files in one pass (~5s vs ~35min for per-file)
+    if semgrep_runner:
+        semgrep_runner.batch_analyze(samples, verbose=verbose)
+
     # Analyze samples
     detection_counts = defaultdict(lambda: {"detected": 0, "total": 0})
     static_analyzable_counts = {"detected": 0, "total": 0}
     dynamic_only_counts = {"detected": 0, "total": 0}
 
     for i, sample in enumerate(samples):
-        if verbose:
-            print(f"Analyzing {i+1}/{len(samples)}: {sample['id']}")
+        if verbose and (i % 50 == 0 or i == len(samples) - 1):
+            print(f"Analyzing {i+1}/{len(samples)}: {sample['id']}", flush=True)
 
         cwe = sample["cwe"]
         is_static_analyzable = cwe in STATIC_ANALYZABLE_CWES
@@ -596,6 +671,7 @@ def run_static_analysis_baseline(
             "sample_id": sample["id"],
             "cwe": cwe,
             "difficulty": sample.get("difficulty", "unknown"),
+            "source_type": sample.get("source_type", "unknown"),
             "is_static_analyzable": is_static_analyzable,
         }
 
@@ -908,8 +984,8 @@ def main():
 
     parser.add_argument(
         "--dataset",
-        default=str(PROJECT_ROOT / "data" / "dataset.json"),
-        help="Path to dataset.json",
+        default=str(PROJECT_ROOT / "data" / "dataset2.json"),
+        help="Path to dataset file (default: data/dataset2.json)",
     )
     parser.add_argument(
         "--tool",
@@ -997,9 +1073,11 @@ def main():
         comparison = compare_with_mutation_testing(results, args.compare_mutation)
 
         if comparison["mutation_testing"]:
-            print(f"\nStatic Analysis Detection Rate: {comparison['static_analysis']['detection_rate']:.1%}")
-            print(f"Mutation Testing Detection Rate: {comparison['mutation_testing']['vuln_detection']:.1%}")
-            print(f"Improvement: {comparison['comparison']['improvement']:+.1%}")
+            sa_rate = comparison['static_analysis']['overall_detection_rate']
+            mt_rate = comparison['mutation_testing']['vuln_detection']
+            print(f"\nStatic Analysis Detection Rate: {sa_rate:.1%}")
+            print(f"Mutation Testing Detection Rate: {mt_rate:.1%}")
+            print(f"Improvement: {mt_rate - sa_rate:+.1%}")
         else:
             print(f"\nMutation testing results not found at: {args.compare_mutation}")
 
@@ -1018,8 +1096,11 @@ def main():
             json.dump(results, f, indent=2)
         print(f"\nResults saved to: {output_path}")
     else:
-        default_output = PROJECT_ROOT / "results" / "static_analysis_baseline.json"
-        default_output.parent.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        static_dir = PROJECT_ROOT / "results" / "static_analysis"
+        static_dir.mkdir(parents=True, exist_ok=True)
+        default_output = static_dir / f"static_analysis_baseline_{timestamp}.json"
         with open(default_output, "w") as f:
             json.dump(results, f, indent=2)
         print(f"\nResults saved to: {default_output}")

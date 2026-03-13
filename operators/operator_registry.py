@@ -87,21 +87,30 @@ OPERATORS: Dict[str, SecurityMutationOperator] = {
 # CWE to Operator mappings
 CWE_OPERATOR_MAP: Dict[str, List[str]] = {
     # Injection vulnerabilities
+    "CWE-74": ["RVALID"],  # Improper Neutralization of Special Elements (generic injection)
     "CWE-89": ["PSQLI", "RVALID"],  # SQL Injection
     "CWE-79": ["RVALID", "RHTTPO"],  # XSS
     "CWE-78": ["CMDINJECT", "RVALID"],  # OS Command Injection
     "CWE-77": ["CMDINJECT"],  # Command Injection
     "CWE-94": ["DESERIAL", "RVALID", "EVALINJECT"],  # Code Injection
     "CWE-95": ["EVALINJECT"],  # Eval Injection
+    "CWE-116": ["RVALID"],  # Improper Encoding or Escaping of Output
     "CWE-1336": ["SSTI"],  # Server-Side Template Injection
     "CWE-90": ["LDAPINJECT"],  # LDAP Injection
     "CWE-643": ["LDAPINJECT"],  # XPath Injection (similar pattern)
 
-    # Path traversal
+    # Path traversal (CWE-22 and its variants)
     "CWE-22": ["PATHCONCAT", "RVALID"],  # Path Traversal
+    "CWE-24": ["PATHCONCAT"],  # Path Traversal: '../filedir'
+    "CWE-32": ["PATHCONCAT"],  # Path Traversal: '...' (Triple Dot)
+    "CWE-36": ["PATHCONCAT"],  # Absolute Path Traversal
+    "CWE-37": ["PATHCONCAT"],  # Path Traversal: '/absolute/pathname/here'
+    "CWE-39": ["PATHCONCAT"],  # Path Traversal: 'C:dirname' (Windows)
+    "CWE-40": ["PATHCONCAT"],  # Path Traversal: UNC Share (Windows)
     "CWE-73": ["PATHCONCAT"],  # External Control of File Name
 
-    # Input validation
+    # Input validation / Configuration
+    "CWE-16": ["RVALID"],  # Configuration
     "CWE-20": ["INPUTVAL", "RVALID", "SUBDOMAIN_SPOOF"],  # Improper Input Validation
     "CWE-117": ["LOGINJECT"],  # Log Injection
     "CWE-113": ["HTTPRS"],  # HTTP Response Splitting
@@ -113,6 +122,10 @@ CWE_OPERATOR_MAP: Dict[str, List[str]] = {
     "CWE-863": ["MISSINGAUTH"],  # Incorrect Authorization
     "CWE-284": ["IDOR", "MISSINGAUTH"],  # Improper Access Control
     "CWE-639": ["IDOR"],  # Authorization Bypass Through User-Controlled Key
+    "CWE-269": ["MISSINGAUTH"],  # Improper Privilege Management
+    "CWE-276": ["MISSINGAUTH"],  # Incorrect Default Permissions
+    "CWE-281": ["MISSINGAUTH"],  # Improper Preservation of Permissions
+    "CWE-732": ["MISSINGAUTH"],  # Incorrect Permission Assignment for Critical Resource
 
     # Credentials
     "CWE-798": ["HARDCODE"],  # Hardcoded Credentials
@@ -126,6 +139,8 @@ CWE_OPERATOR_MAP: Dict[str, List[str]] = {
     "CWE-326": ["WEAKKEY"],  # Inadequate Encryption Strength
     "CWE-295": ["NOCERTVALID"],  # Improper Certificate Validation
     "CWE-297": ["NOCERTVALID"],  # Improper Validation of Certificate with Host Mismatch
+    "CWE-347": ["NOCERTVALID"],  # Improper Verification of Cryptographic Signature
+    "CWE-312": ["RENCRYPT", "CREDEXPOSE"],  # Cleartext Storage of Sensitive Information
 
     # Weak Randomness
     "CWE-338": ["WEAKRANDOM"],  # Use of Cryptographically Weak PRNG
@@ -163,9 +178,18 @@ CWE_OPERATOR_MAP: Dict[str, List[str]] = {
     "CWE-209": ["INFOEXPOSE"],  # Information Exposure Through Error Message
     "CWE-215": ["INFOEXPOSE"],  # Information Exposure Through Debug Information
 
-    # Resource Exhaustion / DoS
-    "CWE-400": ["REGEXDOS"],  # Uncontrolled Resource Consumption
+    # Resource Exhaustion / DoS — H14 fix: Add INPUTVAL for non-regex samples
+    "CWE-400": ["INPUTVAL", "REGEXDOS"],  # Uncontrolled Resource Consumption
+    "CWE-770": ["INPUTVAL", "REGEXDOS"],  # Allocation of Resources Without Limits or Throttling
     "CWE-1333": ["REGEXDOS"],  # Inefficient Regular Expression Complexity
+
+    # Race Conditions — M6 fix: RVALID is wrong for race conditions
+    # Use INPUTVAL as closest approximation; TOCTOU needs a dedicated operator ideally
+    "CWE-362": ["INPUTVAL"],  # Race Condition
+    "CWE-367": ["INPUTVAL"],  # Time-of-check Time-of-use (TOCTOU)
+
+    # Mass Assignment
+    "CWE-915": ["RVALID"],  # Improperly Controlled Modification of Object Attributes
 }
 
 

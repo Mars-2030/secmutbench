@@ -172,6 +172,8 @@ class ModelResult:
     avg_incidental_score: Optional[float] = None
     avg_crash_score: Optional[float] = None
     avg_security_precision: Optional[float] = None
+    secure_pass_rate: Optional[float] = None
+    effective_mutation_score: Optional[float] = None
     evaluation_time: float = 0.0
     errors: int = 0
     detailed_results: List[Dict] = None
@@ -435,6 +437,7 @@ def evaluate_model(
                 "cwe": sample["cwe"],
                 "cwe_name": sample.get("cwe_name", ""),
                 "difficulty": sample["difficulty"],
+                "source_type": sample.get("source_type", "unknown"),
                 "mutation_operators": sample.get("mutation_operators", []),
 
                 # Original code (what the LLM was asked to test)
@@ -468,10 +471,14 @@ def evaluate_model(
                 incidental = sum(1 for m in mutant_details if m.get("killed") and m.get("kill_type") == "assertion_incidental")
                 crash = sum(1 for m in mutant_details if m.get("killed") and m.get("kill_type") == "crash")
                 print(f"MS={killed}/{total} ({ms:.1%}) [Sec:{semantic} Inc:{incidental} Crash:{crash}]")
-            elif total == 0:
-                print(f"MS=N/A (0 mutants)")
             else:
-                print(f"MS=N/A")
+                reason = metrics.get("mutation_score_skipped_reason", "")
+                if reason == "tests_fail_on_secure_code":
+                    print(f"MS=N/A (tests fail on secure code)")
+                elif total == 0:
+                    print(f"MS=N/A (0 mutants)")
+                else:
+                    print(f"MS=N/A")
 
         except Exception as e:
             print(f"ERROR: {e}")
@@ -503,20 +510,30 @@ def evaluate_model(
 
         # Calculate security precision
         secure_passes_count = sum(1 for r in results if r["metrics"].get("secure_passes", False))
+        secure_fail_count = len(results) - secure_passes_count
         vuln_detected_count = sum(1 for r in results if r["metrics"].get("vuln_detected", False))
         sec_precision = vuln_detected_count / secure_passes_count if secure_passes_count > 0 else None
+        avg_ms = sum(valid_mutation_scores) / len(valid_mutation_scores) if valid_mutation_scores else 0.0
+        spr = secure_passes_count / len(results) if results else 0.0
+        eff_ms = avg_ms * spr
+        print(f"  Secure-Pass Rate: {secure_passes_count}/{len(results)} "
+              f"({spr:.1%})"
+              f"{f' — {secure_fail_count} skipped mutation testing' if secure_fail_count else ''}")
+        print(f"  Effective MS: {eff_ms:.1%} (= {avg_ms:.1%} avg_MS * {spr:.1%} secure_pass_rate)")
 
         model_result = ModelResult(
             model_name=model,
             provider=provider,
             samples_evaluated=len(results),
-            avg_mutation_score=sum(valid_mutation_scores) / len(valid_mutation_scores) if valid_mutation_scores else 0.0,
+            avg_mutation_score=avg_ms,
             avg_vuln_detection=sum(vuln_detections) / len(vuln_detections),
             avg_line_coverage=sum(coverages) / len(coverages),
             avg_security_mutation_score=kill_breakdown.get("security_mutation_score"),
             avg_incidental_score=kill_breakdown.get("incidental_score"),
             avg_crash_score=kill_breakdown.get("crash_score"),
             avg_security_precision=sec_precision,
+            secure_pass_rate=spr,
+            effective_mutation_score=eff_ms,
             evaluation_time=time.time() - start_time,
             errors=errors,
             detailed_results=results,
@@ -529,6 +546,7 @@ def evaluate_model(
             avg_mutation_score=0,
             avg_vuln_detection=0,
             avg_line_coverage=0,
+            effective_mutation_score=0,
             evaluation_time=time.time() - start_time,
             errors=errors,
         )
@@ -709,6 +727,7 @@ def evaluate_model_batch(
             "cwe": sample["cwe"],
             "cwe_name": sample.get("cwe_name", ""),
             "difficulty": sample["difficulty"],
+            "source_type": sample.get("source_type", "unknown"),
             "mutation_operators": sample.get("mutation_operators", []),
             "secure_code": sample["secure_code"],
             "insecure_code": sample.get("insecure_code", ""),
@@ -734,20 +753,30 @@ def evaluate_model_batch(
               f"Crash={kill_breakdown['crash_kills']}")
 
         secure_passes_count = sum(1 for r in results if r["metrics"].get("secure_passes", False))
+        secure_fail_count = len(results) - secure_passes_count
         vuln_detected_count = sum(1 for r in results if r["metrics"].get("vuln_detected", False))
         sec_precision = vuln_detected_count / secure_passes_count if secure_passes_count > 0 else None
+        avg_ms = sum(valid_mutation_scores) / len(valid_mutation_scores) if valid_mutation_scores else 0.0
+        spr = secure_passes_count / len(results) if results else 0.0
+        eff_ms = avg_ms * spr
+        print(f"  Secure-Pass Rate: {secure_passes_count}/{len(results)} "
+              f"({spr:.1%})"
+              f"{f' — {secure_fail_count} skipped mutation testing' if secure_fail_count else ''}")
+        print(f"  Effective MS: {eff_ms:.1%} (= {avg_ms:.1%} avg_MS * {spr:.1%} secure_pass_rate)")
 
         model_result = ModelResult(
             model_name=model,
             provider=provider,
             samples_evaluated=len(results),
-            avg_mutation_score=sum(valid_mutation_scores) / len(valid_mutation_scores) if valid_mutation_scores else 0.0,
+            avg_mutation_score=avg_ms,
             avg_vuln_detection=sum(vuln_detections) / len(vuln_detections),
             avg_line_coverage=sum(coverages) / len(coverages),
             avg_security_mutation_score=kill_breakdown.get("security_mutation_score"),
             avg_incidental_score=kill_breakdown.get("incidental_score"),
             avg_crash_score=kill_breakdown.get("crash_score"),
             avg_security_precision=sec_precision,
+            secure_pass_rate=spr,
+            effective_mutation_score=eff_ms,
             evaluation_time=time.time() - start_time,
             errors=errors,
             detailed_results=results,
@@ -760,6 +789,7 @@ def evaluate_model_batch(
             avg_mutation_score=0,
             avg_vuln_detection=0,
             avg_line_coverage=0,
+            effective_mutation_score=0,
             evaluation_time=time.time() - start_time,
             errors=errors,
         )
@@ -769,25 +799,27 @@ def evaluate_model_batch(
 
 def print_results_table(results: List[ModelResult], ref_baseline: Optional[Dict] = None):
     """Print results as a formatted table."""
-    print("\n" + "="*112)
+    print("\n" + "="*140)
     print("LLM BASELINE RESULTS")
-    print("="*112)
+    print("="*140)
 
-    # Header
-    print(f"{'Model':<35} {'Mutation':<12} {'Sec MS':<12} {'Vuln Det':<12} {'Coverage':<12} {'Sec Rel':<12} {'Quality':<12}")
-    print("-"*112)
+    # Header — Eff MS is the primary metric (MS corrected for secure-pass rate)
+    print(f"{'Model':<35} {'Eff MS':<12} {'Raw MS':<12} {'Sec MS':<12} {'Vuln Det':<12} {'Sec-Pass':<12} {'Coverage':<12} {'Sec Rel':<12} {'Quality':<12}")
+    print("-"*140)
 
-    # Sort by mutation score
-    sorted_results = sorted(results, key=lambda x: x.avg_mutation_score, reverse=True)
+    # Sort by effective mutation score (the honest metric)
+    sorted_results = sorted(results, key=lambda x: x.effective_mutation_score or 0, reverse=True)
 
     for r in sorted_results:
         sec_rel = f"{r.avg_security_relevance:>10.1%}" if r.avg_security_relevance is not None else f"{'N/A':>10}"
         quality = f"{r.avg_test_quality:>10.1%}" if r.avg_test_quality is not None else f"{'N/A':>10}"
         sms = f"{r.avg_security_mutation_score:>10.1%}" if r.avg_security_mutation_score is not None else f"{'N/A':>10}"
-        print(f"{r.model_name:<35} {r.avg_mutation_score:>10.1%} {sms} {r.avg_vuln_detection:>10.1%} "
-              f"{r.avg_line_coverage:>10.1%} {sec_rel} {quality}")
+        spr = f"{r.secure_pass_rate:>10.1%}" if r.secure_pass_rate is not None else f"{'N/A':>10}"
+        eff = f"{r.effective_mutation_score:>10.1%}" if r.effective_mutation_score is not None else f"{'N/A':>10}"
+        print(f"{r.model_name:<35} {eff} {r.avg_mutation_score:>10.1%} {sms} {r.avg_vuln_detection:>10.1%} "
+              f"{spr} {r.avg_line_coverage:>10.1%} {sec_rel} {quality}")
 
-    print("-"*112)
+    print("-"*140)
     # Display reference baseline (computed or default)
     if ref_baseline:
         ms = ref_baseline.get('avg_mutation_score', 0)
@@ -797,18 +829,29 @@ def print_results_table(results: List[ModelResult], ref_baseline: Optional[Dict]
         tq = ref_baseline.get('avg_test_quality')
         sr_str = f"{sr:>10.1%}" if sr is not None else f"{'N/A':>10}"
         tq_str = f"{tq:>10.1%}" if tq is not None else f"{'N/A':>10}"
-        print(f"{'Reference Tests':<35} {ms:>10.1%} {'N/A':>10} {vd:>10.1%} {cov:>10.1%} {sr_str} {tq_str}")
+        # Reference tests have 100% secure-pass, so eff MS = raw MS
+        print(f"{'Reference Tests':<35} {ms:>10.1%} {ms:>10.1%} {'N/A':>10} {vd:>10.1%} {'100.0%':>10} {cov:>10.1%} {sr_str} {tq_str}")
     else:
-        print(f"{'Reference Tests':<35} {'N/A':>12} {'N/A':>12} {'N/A':>12} {'N/A':>12} {'N/A':>12} {'N/A':>12}")
-    print("="*112)
+        print(f"{'Reference Tests':<35} {'N/A':>12} {'N/A':>12} {'N/A':>12} {'N/A':>12} {'N/A':>12} {'N/A':>12} {'N/A':>12} {'N/A':>12}")
+    print("="*140)
+
+
+def _sanitize_model_name(name: str) -> str:
+    """Sanitize model name for use as directory/file name."""
+    return name.split("[")[0].strip().replace(":", "_").replace("/", "_").replace(" ", "")
 
 
 def save_results(results: List[ModelResult], output_dir: Path, ref_baseline: Optional[Dict] = None):
-    """Save results to JSON file."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-
+    """Save results to JSON file under a model-specific subdirectory."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = output_dir / f"baseline_results_{timestamp}.json"
+
+    if results:
+        model_dir = output_dir / _sanitize_model_name(results[0].model_name)
+    else:
+        model_dir = output_dir / "unknown"
+
+    model_dir.mkdir(parents=True, exist_ok=True)
+    output_file = model_dir / f"baseline_results_{timestamp}.json"
 
     # Convert to serializable format
     data = {
@@ -839,6 +882,7 @@ def main():
     parser.add_argument("--difficulty", choices=["easy", "medium", "hard"],
                        help="Filter by difficulty")
     parser.add_argument("--cwe", help="Filter by CWE (e.g., CWE-89)")
+    parser.add_argument("--dataset", help="Path to dataset file (default: auto-detect)")
     parser.add_argument("--max-samples", type=int, help="Maximum samples to evaluate")
     parser.add_argument("--start-sample", type=int, default=0, help="Start from sample index (for resuming)")
     parser.add_argument("--use-judge", action="store_true", help="Run LLM-as-Judge evaluation")
@@ -865,12 +909,146 @@ def main():
     parser.add_argument("--batch-judge", action="store_true",
                        help="Use batch API for LLM-as-Judge (50%% cost savings). "
                             "Requires --use-judge flag.")
+    parser.add_argument("--judge-only", type=str, default=None,
+                       help="Run LLM-as-Judge on saved results file (skip LLM generation). "
+                            "Example: --judge-only results/qwen3-coder_30b/baseline_results_20260312.json")
 
     args = parser.parse_args()
 
+    # =========================================================================
+    # Judge-only mode: run LLM-as-Judge on saved results
+    # =========================================================================
+    if args.judge_only:
+        results_path = Path(args.judge_only)
+        if not results_path.exists():
+            print(f"Error: Results file not found: {results_path}")
+            sys.exit(1)
+
+        print(f"Loading saved results from: {results_path}")
+        with open(results_path) as f:
+            saved_data = json.load(f)
+
+        # Handle both formats: list of ModelResult dicts, or single ModelResult
+        model_results_list = saved_data.get("results", [saved_data])
+
+        judge_provider = args.judge_provider
+        use_batch = args.batch_judge
+
+        for model_data in model_results_list:
+            detailed = model_data.get("detailed_results", [])
+            if not detailed:
+                print(f"  Skipping {model_data.get('model_name', 'unknown')}: no detailed_results")
+                continue
+
+            model_name = model_data.get("model_name", "unknown")
+            print(f"\nRunning LLM-as-Judge ({judge_provider}) on: {model_name}")
+            print(f"  Samples to judge: {len(detailed)} (2 API calls each = {len(detailed) * 2} total)")
+
+            try:
+                evaluator = create_evaluator(provider=judge_provider)
+
+                security_scores = []
+                quality_scores = []
+                composite_scores = []
+
+                if use_batch:
+                    print(f"  Using BATCH mode (50% cost savings)...")
+
+                    samples_to_judge = []
+                    tests_to_judge = []
+                    exec_results_to_judge = []
+
+                    for r in detailed:
+                        # Reconstruct sample dict from saved fields
+                        sample = {
+                            "id": r["sample_id"],
+                            "cwe": r.get("cwe", ""),
+                            "cwe_name": r.get("cwe_name", ""),
+                            "secure_code": r.get("secure_code", ""),
+                            "entry_point": r.get("entry_point", "function"),
+                            "difficulty": r.get("difficulty", "unknown"),
+                        }
+                        samples_to_judge.append(sample)
+                        tests_to_judge.append(r.get("generated_tests", ""))
+                        exec_results_to_judge.append({"metrics": r.get("metrics", {})})
+
+                    judge_results = evaluator.evaluate_batch_api(
+                        samples=samples_to_judge,
+                        generated_tests_list=tests_to_judge,
+                        execution_results_list=exec_results_to_judge,
+                        provider=judge_provider,
+                    )
+
+                    for judge_result in judge_results:
+                        if judge_result.security_relevance:
+                            security_scores.append(judge_result.security_relevance.score)
+                        if judge_result.test_quality:
+                            quality_scores.append(judge_result.test_quality.score)
+                        composite_scores.append(judge_result.composite_score)
+
+                    print(f"  Batch judge complete: {len(judge_results)} samples evaluated")
+                else:
+                    # Sequential evaluation
+                    for i, r in enumerate(detailed, 1):
+                        print(f"    [{i}/{len(detailed)}] Judging {r['sample_id'][:12]}...", end=" ", flush=True)
+
+                        sample = {
+                            "id": r["sample_id"],
+                            "cwe": r.get("cwe", ""),
+                            "cwe_name": r.get("cwe_name", ""),
+                            "secure_code": r.get("secure_code", ""),
+                            "entry_point": r.get("entry_point", "function"),
+                            "difficulty": r.get("difficulty", "unknown"),
+                        }
+                        judge_result = evaluator.evaluate(
+                            sample,
+                            r.get("generated_tests", ""),
+                            {"metrics": r.get("metrics", {})}
+                        )
+
+                        sec_score = 0
+                        qual_score = 0
+                        if judge_result.security_relevance:
+                            security_scores.append(judge_result.security_relevance.score)
+                            sec_score = judge_result.security_relevance.score
+                        if judge_result.test_quality:
+                            quality_scores.append(judge_result.test_quality.score)
+                            qual_score = judge_result.test_quality.score
+                        composite_scores.append(judge_result.composite_score)
+                        print(f"Security: {sec_score:.0%}, Quality: {qual_score:.0%}")
+
+                        time.sleep(0.5)  # Rate limiting
+
+                # Print summary
+                print(f"\n  Judge Results for {model_name}:")
+                if security_scores:
+                    avg_sec = sum(security_scores) / len(security_scores)
+                    print(f"    Avg Security Relevance: {avg_sec:.1%}")
+                    model_data["avg_security_relevance"] = avg_sec
+                if quality_scores:
+                    avg_qual = sum(quality_scores) / len(quality_scores)
+                    print(f"    Avg Test Quality:       {avg_qual:.1%}")
+                    model_data["avg_test_quality"] = avg_qual
+                if composite_scores:
+                    avg_comp = sum(composite_scores) / len(composite_scores)
+                    print(f"    Avg Composite Score:    {avg_comp:.1%}")
+                    model_data["avg_composite_score"] = avg_comp
+
+            except Exception as e:
+                print(f"  Judge error: {e}")
+
+        # Save updated results with judge scores
+        output_path = results_path.with_name(
+            results_path.stem + f"_judged_{judge_provider}" + results_path.suffix
+        )
+        with open(output_path, "w") as f:
+            json.dump(saved_data, f, indent=2)
+        print(f"\nJudged results saved to: {output_path}")
+        sys.exit(0)
+
     # Load benchmark
     print("Loading benchmark...")
-    benchmark = load_benchmark(difficulty=args.difficulty, cwe=args.cwe)
+    benchmark = load_benchmark(path=args.dataset, difficulty=args.difficulty, cwe=args.cwe)
     print(f"Loaded {len(benchmark)} samples")
 
     # Filter out invalid samples if requested
