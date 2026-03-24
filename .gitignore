@@ -75,7 +75,25 @@ temp/
 
 # Data files that shouldn't be committed (raw downloads)
 data/raw_*.json
+data/raw/
 data/decontaminated/
+data/variations*.json
+
+# Claude Code config
+.claude/
+
+# Evaluation output logs
+*_output.txt
+
+# Paper and review (private)
+paper/
+reviewer/
+
+# Superpowers docs
+docs/superpowers/
+
+# Temp copies
+-results copy/
 
 # Large model files
 *.bin

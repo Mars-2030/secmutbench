@@ -22,8 +22,7 @@ Usage:
     # Run all Ollama models
     python baselines/run_llm_baselines.py --provider ollama --max-samples 5
 
-For the full multi-agent system with feedback loops, use:
-    python agentic_pipeline/agents/orchestrator.py --models E001 --samples 10
+
 """
 
 import json
@@ -40,6 +39,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from evaluation.evaluate import evaluate_generated_tests, evaluate_reference_tests, load_benchmark
+from evaluation.test_runner import TestRunner
 from evaluation.llm_judge import create_evaluator, format_multimodal_report
 from evaluation.prompts import (
     format_test_generation_prompt,
@@ -139,16 +139,34 @@ OLLAMA_MODELS = [
     "deepseek-coder-v2:latest",   # E007 - DeepSeek
     "deepseek-r1:14b",            # E008 - DeepSeek reasoning
     "gpt-oss:120b",               # E009 - OpenAI OSS model
+    "kimi-k2.5:cloud",            # E010 - Kimi K2.5 via Ollama cloud
+    "glm-5:cloud",                # E011 - GLM-5 via Ollama cloud
 ]
 
 API_MODELS = [
     {"name": "gpt-4o", "provider": "openai"},
-    {"name": "gpt-5", "provider": "openai"},
+    {"name": "gpt-5.2-2025-12-11", "provider": "openai"},
     {"name": "gpt-5-mini-2025-08-07", "provider": "openai"},
     {"name": "claude-sonnet-4-5-20250929", "provider": "anthropic"},
     {"name": "claude-opus-4-6", "provider": "anthropic"},
-    {"name": "gemini-3.0-flash", "provider": "google"},
-    {"name": "gemini-2.5-pro", "provider": "google"},
+    {"name": "gemini-3-flash-preview", "provider": "google"},
+    {"name": "gemini-3.1-pro-preview", "provider": "google"},
+]
+
+# ARC vLLM models (served via vLLM on ARC cluster, OpenAI-compatible API)
+# Launch with SLURM, then SSH port-forward to access locally
+VLLM_MODELS = [
+    "gpt-oss-120b",
+    "Kimi-K2.5",
+    "GLM-5",
+    "GLM-4.7",
+    "Kimi-K2-Thinking",
+]
+
+# Together.ai models (OpenAI-compatible API at https://api.together.xyz/v1)
+TOGETHER_MODELS = [
+    "moonshotai/Kimi-K2.5",
+    "zai-org/GLM-5",
 ]
 
 
@@ -183,43 +201,121 @@ class ModelResult:
             self.detailed_results = []
 
 
-def call_ollama(model: str, prompt: str, timeout: int = 300) -> str:
-    """Call Ollama API to generate tests.
+def call_ollama(model: str, prompt: str, timeout: int = 300, max_retries: int = 5) -> str:
+    """Call Ollama API to generate tests with retry and backoff.
+
+    For cloud models with hourly rate limits, automatically waits for the
+    rate limit to reset and retries (up to 65 minutes per wait).
 
     Args:
         model: Ollama model name
         prompt: The prompt to send
         timeout: Request timeout in seconds (default 300 = 5 minutes)
+        max_retries: Maximum retry attempts for rate limits / errors
     """
     import requests
 
-    try:
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": 0.2,
-                "num_predict": 2048,
-            }
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "temperature": 0.2,
+            "num_predict": 2048,
         }
-        if model.startswith("gpt-oss"):
-            payload["think"] = "high"
-            payload["options"]["num_predict"] = 8192
-        response = requests.post(
-            "http://localhost:11434/api/generate",
-            json=payload,
-            timeout=timeout
-        )
-        response.raise_for_status()
-        result = response.json()
-        return result.get("response", "") or result.get("thinking", "")
-    except requests.exceptions.Timeout:
-        print(f"  Ollama timeout after {timeout}s - try increasing with --timeout")
-        return ""
-    except Exception as e:
-        print(f"  Ollama error: {e}")
-        return ""
+    }
+    if model.startswith("gpt-oss"):
+        payload["think"] = "high"
+        payload["options"]["num_predict"] = 8192
+    elif "kimi" in model.lower():
+        payload["options"]["temperature"] = 0.6
+        payload["options"]["num_predict"] = 8192
+    elif "glm" in model.lower():
+        payload["options"]["num_predict"] = 4096
+
+    is_cloud = model.endswith(":cloud") or "cloud" in model.lower()
+
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(
+                "http://localhost:11434/api/generate",
+                json=payload,
+                timeout=timeout
+            )
+            response.raise_for_status()
+            result = response.json()
+            content = result.get("response", "") or result.get("thinking", "")
+            if content.strip():
+                return content
+            # Empty response — retry
+            if attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                print(f"  Empty response, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...", end=" ", flush=True)
+                time.sleep(wait)
+        except requests.exceptions.Timeout:
+            print(f"  Ollama timeout after {timeout}s - try increasing with --timeout")
+            return ""
+        except Exception as e:
+            err_str = str(e)
+            is_rate_limit = "429" in err_str
+
+            if is_rate_limit and is_cloud:
+                # Cloud model hourly rate limit — wait for reset
+                wait_minutes = _ollama_cloud_wait(err_str)
+                print(f"\n  [Rate limit] Cloud model hourly limit hit. "
+                      f"Waiting {wait_minutes} min for reset...", flush=True)
+                _countdown_wait(wait_minutes * 60)
+                print(f"  Rate limit should be reset, retrying...", flush=True)
+                # Don't count this as an attempt — reset the loop
+                continue
+            elif is_rate_limit and attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                print(f"  Rate limited, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...", end=" ", flush=True)
+                time.sleep(wait)
+            elif attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                print(f"  Ollama error: {e}, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...", end=" ", flush=True)
+                time.sleep(wait)
+            else:
+                print(f"  Ollama error: {e} (all {max_retries} attempts failed)")
+                return ""
+    return ""
+
+
+def _ollama_cloud_wait(err_str: str) -> int:
+    """Parse Ollama cloud rate limit error to determine wait time in minutes.
+
+    Tries to extract retry-after or reset time from the error message.
+    Falls back to 60 minutes (typical hourly reset).
+    """
+    import re
+    # Try to find "retry after Xs" or "X seconds" patterns
+    match = re.search(r'retry.?after[:\s]+(\d+)', err_str, re.IGNORECASE)
+    if match:
+        seconds = int(match.group(1))
+        return max(1, seconds // 60)
+    # Try "reset in X minutes"
+    match = re.search(r'reset.*?(\d+)\s*min', err_str, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    # Default: wait 60 minutes for hourly reset
+    return 60
+
+
+def _countdown_wait(total_seconds: int):
+    """Wait with a countdown timer displayed to the user."""
+    import sys as _sys
+    start = time.time()
+    while True:
+        elapsed = time.time() - start
+        remaining = total_seconds - elapsed
+        if remaining <= 0:
+            print(flush=True)
+            break
+        mins, secs = divmod(int(remaining), 60)
+        _sys.stderr.write(f"\r  Waiting: {mins:02d}:{secs:02d} remaining...  ")
+        _sys.stderr.flush()
+        time.sleep(min(10, remaining))  # Update every 10 seconds
 
 
 def call_openai(model: str, prompt: str) -> str:
@@ -250,6 +346,79 @@ def call_openai(model: str, prompt: str) -> str:
     except Exception as e:
         print(f"  OpenAI error: {e}")
         return ""
+
+
+def call_vllm(model: str, prompt: str, base_url: str = "http://localhost:8000/v1",
+              api_key: str = "dummy", timeout: int = 600) -> str:
+    """Call vLLM server (OpenAI-compatible API) to generate tests.
+
+    Args:
+        model: The --served-model-name used when starting vLLM
+        prompt: The prompt to send
+        base_url: vLLM server URL (default: http://localhost:8000/v1)
+        api_key: API key set in vLLM --api-key flag
+        timeout: Request timeout in seconds (default 600 = 10 min for large models)
+    """
+    try:
+        from openai import OpenAI
+        client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a security testing expert. Generate only Python test code, no explanations."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+            max_tokens=2048,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"  vLLM error: {e}")
+        return ""
+
+
+def call_together(model: str, prompt: str, max_retries: int = 5) -> str:
+    """Call Together.ai API to generate tests with retry and backoff."""
+    from together import Together
+    client = Together(api_key=os.getenv("TOGETHER_API_KEY"), timeout=600)
+
+    # Kimi models use thinking mode — need higher temperature and more tokens
+    if "kimi" in model.lower():
+        temp = 0.6
+        max_tok = 8192
+    else:
+        temp = 0.2
+        max_tok = 4096
+
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are a security testing expert. Generate only Python test code, no explanations."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=temp,
+                max_tokens=max_tok,
+            )
+            content = response.choices[0].message.content or ""
+            if content.strip():
+                return content
+            # Empty content — retry
+            if attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                print(f"  Empty response, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...", end=" ", flush=True)
+                time.sleep(wait)
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                print(f"  Together.ai error: {e}, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...", end=" ", flush=True)
+                time.sleep(wait)
+            else:
+                print(f"  Together.ai error: {e} (all {max_retries} attempts failed)")
+                return ""
+    return ""
 
 
 def call_anthropic(model: str, prompt: str) -> str:
@@ -297,6 +466,102 @@ def call_google(model: str, prompt: str, max_retries: int = 3) -> str:
     return ""
 
 
+_zhipu_last_call = 0.0  # Rate limiter for Zhipu API (5 RPM = 12s between calls)
+
+def call_zhipu(model: str, prompt: str, max_retries: int = 5) -> str:
+    """Call Zhipu AI (Z.AI) API for GLM models with retry and backoff.
+
+    Rate limited to 5 requests per minute (12s between calls).
+    """
+    global _zhipu_last_call
+    from openai import OpenAI
+    client = OpenAI(
+        base_url="https://api.z.ai/api/paas/v4",
+        api_key=os.getenv("ZHIPU_API_KEY"),
+        timeout=600,
+    )
+
+    for attempt in range(max_retries):
+        # Enforce 5 RPM rate limit (12s between calls)
+        elapsed = time.time() - _zhipu_last_call
+        if elapsed < 12:
+            time.sleep(12 - elapsed)
+
+        try:
+            _zhipu_last_call = time.time()
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are a security testing expert. Generate only Python test code, no explanations."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                max_tokens=4096,
+            )
+            content = response.choices[0].message.content or ""
+            if content.strip():
+                return content
+            if attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                print(f"  Empty response, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...", end=" ", flush=True)
+                time.sleep(wait)
+        except Exception as e:
+            if "429" in str(e) and attempt < max_retries - 1:
+                wait = max(12, 2 ** (attempt + 1))
+                print(f"  Rate limited, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...", end=" ", flush=True)
+                time.sleep(wait)
+            elif attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                print(f"  Zhipu error: {e}, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...", end=" ", flush=True)
+                time.sleep(wait)
+            else:
+                print(f"  Zhipu error: {e} (all {max_retries} attempts failed)")
+                return ""
+    return ""
+
+
+def call_fireworks(model: str, prompt: str, max_retries: int = 5) -> str:
+    """Call Fireworks AI API for inference with retry and backoff."""
+    from openai import OpenAI
+    client = OpenAI(
+        base_url="https://api.fireworks.ai/inference/v1",
+        api_key=os.getenv("FIREWORKS_API_KEY"),
+        timeout=600,
+    )
+
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are a security testing expert. Generate only Python test code, no explanations."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                max_tokens=4096,
+            )
+            content = response.choices[0].message.content or ""
+            if content.strip():
+                return content
+            if attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                print(f"  Empty response, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...", end=" ", flush=True)
+                time.sleep(wait)
+        except Exception as e:
+            if "429" in str(e) and attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                print(f"  Rate limited, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...", end=" ", flush=True)
+                time.sleep(wait)
+            elif attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                print(f"  Fireworks error: {e}, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...", end=" ", flush=True)
+                time.sleep(wait)
+            else:
+                print(f"  Fireworks error: {e} (all {max_retries} attempts failed)")
+                return ""
+    return ""
+
+
 def generate_tests(
     model: str,
     provider: str,
@@ -340,10 +605,21 @@ def generate_tests(
         return call_ollama(model, prompt, timeout=timeout)
     elif provider == "openai":
         return call_openai(model, prompt)
+    elif provider == "vllm":
+        return call_vllm(model, prompt,
+                         base_url=os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1"),
+                         api_key=os.getenv("VLLM_API_KEY", "dummy"),
+                         timeout=timeout)
+    elif provider == "together":
+        return call_together(model, prompt)
     elif provider == "anthropic":
         return call_anthropic(model, prompt)
     elif provider == "google":
         return call_google(model, prompt)
+    elif provider == "zhipu":
+        return call_zhipu(model, prompt)
+    elif provider == "fireworks":
+        return call_fireworks(model, prompt)
     else:
         raise ValueError(f"Unknown provider: {provider}")
 
@@ -368,6 +644,52 @@ def extract_test_code(response: str) -> str:
     return response
 
 
+def _checkpoint_path(model: str, provider: str, prompt_variant: str, output_dir: str = "results") -> Path:
+    """Get the checkpoint file path for a model + provider + variant combination."""
+    safe_name = _sanitize_model_name(model, provider)
+    return Path(output_dir) / safe_name / f".checkpoint_{prompt_variant}.json"
+
+
+def _load_checkpoint(model: str, provider: str, prompt_variant: str, output_dir: str = "results") -> tuple:
+    """Load checkpoint if it exists. Returns (results_list, completed_ids_set, errors_count)."""
+    cp_path = _checkpoint_path(model, provider, prompt_variant, output_dir)
+    if cp_path.exists():
+        try:
+            with open(cp_path) as f:
+                cp = json.load(f)
+            results = cp.get("results", [])
+            completed_ids = set(cp.get("completed_ids", []))
+            errors = cp.get("errors", 0)
+            return results, completed_ids, errors
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return [], set(), 0
+
+
+def _save_checkpoint(model: str, provider: str, prompt_variant: str, results: list,
+                     completed_ids: set, errors: int, output_dir: str = "results"):
+    """Save checkpoint after each sample for resume support."""
+    cp_path = _checkpoint_path(model, provider, prompt_variant, output_dir)
+    cp_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cp_path, "w") as f:
+        json.dump({
+            "model": model,
+            "provider": provider,
+            "prompt_variant": prompt_variant,
+            "results": results,
+            "completed_ids": list(completed_ids),
+            "errors": errors,
+            "last_updated": datetime.now().isoformat(),
+        }, f)
+
+
+def _clear_checkpoint(model: str, provider: str, prompt_variant: str, output_dir: str = "results"):
+    """Remove checkpoint file after successful completion."""
+    cp_path = _checkpoint_path(model, provider, prompt_variant, output_dir)
+    if cp_path.exists():
+        cp_path.unlink()
+
+
 def evaluate_model(
     model: str,
     provider: str,
@@ -380,6 +702,7 @@ def evaluate_model(
     timeout: int = 300,
     prompt_variant: str = "full",
     batch_judge: bool = False,
+    output_dir: str = "results",
 ) -> ModelResult:
     """Evaluate a single model on the benchmark.
 
@@ -389,24 +712,32 @@ def evaluate_model(
             - "no-hint": Generic "write tests" without security context
             - "cwe-only": Just CWE ID, no detailed guidance
         batch_judge: Use batch API for LLM-as-Judge (50% cost savings)
+        output_dir: Output directory (used for checkpoint files)
     """
     print(f"\n{'='*60}")
     print(f"Evaluating: {model} ({provider})")
     print(f"Prompt variant: {prompt_variant}")
-    if start_sample > 0:
+
+    # Load checkpoint if exists (auto-resume)
+    results, completed_ids, errors = _load_checkpoint(model, provider, prompt_variant, output_dir)
+    if completed_ids:
+        print(f"Resuming from checkpoint: {len(completed_ids)} samples already done")
+    elif start_sample > 0:
         print(f"Resuming from sample {start_sample}")
     print(f"{'='*60}")
 
     start_time = time.time()
-    results = []
-    errors = 0
 
     samples_to_eval = benchmark[:max_samples] if max_samples else benchmark
-    # Skip to start_sample for resume support
+    # Skip to start_sample for manual resume support
     samples_to_eval = samples_to_eval[start_sample:]
     total_samples = len(benchmark[:max_samples] if max_samples else benchmark)
 
     for i, sample in enumerate(samples_to_eval, start=start_sample):
+        # Skip samples already in checkpoint
+        if sample["id"] in completed_ids:
+            continue
+
         print(f"  [{i+1}/{total_samples}] {sample['id']}...", end=" ", flush=True)
 
         try:
@@ -417,6 +748,8 @@ def evaluate_model(
             if not generated_tests.strip():
                 print("EMPTY")
                 errors += 1
+                completed_ids.add(sample["id"])
+                _save_checkpoint(model, provider, prompt_variant, results, completed_ids, errors, output_dir)
                 continue
 
             # Generate the prompt for logging
@@ -427,8 +760,9 @@ def evaluate_model(
                 include_mock_env=True,
             )
 
-            # Evaluate with mutation testing
-            eval_result = evaluate_generated_tests(sample, generated_tests, max_mutants=max_mutants)
+            # Evaluate with mutation testing (30s timeout to avoid hanging on bad tests)
+            runner = TestRunner(timeout=30.0)
+            eval_result = evaluate_generated_tests(sample, generated_tests, runner=runner, max_mutants=max_mutants)
 
             # Build detailed result with all context needed for analysis
             results.append({
@@ -480,14 +814,23 @@ def evaluate_model(
                 else:
                     print(f"MS=N/A")
 
+            # Save checkpoint after each successful sample
+            completed_ids.add(sample["id"])
+            _save_checkpoint(model, provider, prompt_variant, results, completed_ids, errors, output_dir)
+
         except Exception as e:
             print(f"ERROR: {e}")
             errors += 1
+            completed_ids.add(sample["id"])
+            _save_checkpoint(model, provider, prompt_variant, results, completed_ids, errors, output_dir)
             continue
 
         # Rate limiting for API calls
-        if provider in ["openai", "anthropic"]:
+        if provider in ["openai", "anthropic", "together"]:
             time.sleep(1)
+
+    # Clear checkpoint on successful completion
+    _clear_checkpoint(model, provider, prompt_variant, output_dir)
 
     # Calculate aggregates
     if results:
@@ -718,8 +1061,9 @@ def evaluate_model_batch(
             errors += 1
             continue
 
-        # Evaluate with mutation testing
-        eval_result = evaluate_generated_tests(sample, generated_tests, max_mutants=max_mutants)
+        # Evaluate with mutation testing (30s timeout to avoid hanging on bad tests)
+        runner = TestRunner(timeout=30.0)
+        eval_result = evaluate_generated_tests(sample, generated_tests, runner=runner, max_mutants=max_mutants)
 
         prompt = format_prompt(sample)
         results.append({
@@ -836,9 +1180,16 @@ def print_results_table(results: List[ModelResult], ref_baseline: Optional[Dict]
     print("="*140)
 
 
-def _sanitize_model_name(name: str) -> str:
-    """Sanitize model name for use as directory/file name."""
-    return name.split("[")[0].strip().replace(":", "_").replace("/", "_").replace(" ", "")
+def _sanitize_model_name(name: str, provider: str = "") -> str:
+    """Sanitize model name for use as directory/file name.
+
+    Includes provider prefix so results from different providers
+    (e.g. glm-5 via together vs fireworks) get separate directories.
+    """
+    clean = name.split("[")[0].strip().replace(":", "_").replace("/", "_").replace(" ", "")
+    if provider:
+        return f"{clean}_{provider}"
+    return clean
 
 
 def save_results(results: List[ModelResult], output_dir: Path, ref_baseline: Optional[Dict] = None):
@@ -846,7 +1197,7 @@ def save_results(results: List[ModelResult], output_dir: Path, ref_baseline: Opt
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     if results:
-        model_dir = output_dir / _sanitize_model_name(results[0].model_name)
+        model_dir = output_dir / _sanitize_model_name(results[0].model_name, results[0].provider)
     else:
         model_dir = output_dir / "unknown"
 
@@ -877,8 +1228,12 @@ def save_results(results: List[ModelResult], output_dir: Path, ref_baseline: Opt
 def main():
     parser = argparse.ArgumentParser(description="Run LLM baseline evaluations")
     parser.add_argument("--models", nargs="+", help="Specific models to evaluate")
-    parser.add_argument("--provider", choices=["ollama", "openai", "anthropic", "google", "all"],
+    parser.add_argument("--provider", choices=["ollama", "openai", "anthropic", "google", "vllm", "together", "zhipu", "fireworks", "all"],
                        default="ollama", help="Model provider")
+    parser.add_argument("--vllm-base-url", default=None,
+                       help="vLLM server URL (default: http://localhost:8000/v1). Sets VLLM_BASE_URL env var.")
+    parser.add_argument("--vllm-api-key", default=None,
+                       help="vLLM API key (default: from VLLM_API_KEY env var or 'dummy')")
     parser.add_argument("--difficulty", choices=["easy", "medium", "hard"],
                        help="Filter by difficulty")
     parser.add_argument("--cwe", help="Filter by CWE (e.g., CWE-89)")
@@ -888,7 +1243,7 @@ def main():
     parser.add_argument("--use-judge", action="store_true", help="Run LLM-as-Judge evaluation")
     parser.add_argument("--judge-provider", choices=["anthropic", "openai"],
                        default="anthropic", help="Provider for LLM-as-Judge")
-    parser.add_argument("--output", default="baselines/results", help="Output directory")
+    parser.add_argument("--output", default="results", help="Output directory")
     parser.add_argument("--shuffle", action="store_true", default=True, help="Shuffle samples before slicing (ensures CWE diversity) - enabled by default")
     parser.add_argument("--no-shuffle", action="store_false", dest="shuffle", help="Disable shuffling (process samples in original order)")
     parser.add_argument("--stratified", action="store_true",
@@ -914,6 +1269,12 @@ def main():
                             "Example: --judge-only results/qwen3-coder_30b/baseline_results_20260312.json")
 
     args = parser.parse_args()
+
+    # Set vLLM env vars from CLI args (so call_vllm picks them up)
+    if args.vllm_base_url:
+        os.environ["VLLM_BASE_URL"] = args.vllm_base_url
+    if args.vllm_api_key:
+        os.environ["VLLM_API_KEY"] = args.vllm_api_key
 
     # =========================================================================
     # Judge-only mode: run LLM-as-Judge on saved results
@@ -1078,9 +1439,15 @@ def main():
     models_to_eval = []
 
     if args.models:
-        # Use specified models
+        # Use specified models with the given provider
         for m in args.models:
-            if m in OLLAMA_MODELS or ":" in m:
+            if args.provider in ("openai", "anthropic", "google", "zhipu", "fireworks"):
+                models_to_eval.append({"name": m, "provider": args.provider})
+            elif args.provider == "together" or m in TOGETHER_MODELS:
+                models_to_eval.append({"name": m, "provider": "together"})
+            elif args.provider == "vllm" or m in VLLM_MODELS:
+                models_to_eval.append({"name": m, "provider": "vllm"})
+            elif m in OLLAMA_MODELS or ":" in m:
                 models_to_eval.append({"name": m, "provider": "ollama"})
             else:
                 # Check API models
@@ -1096,6 +1463,13 @@ def main():
     elif args.provider == "ollama":
         for m in OLLAMA_MODELS:
             models_to_eval.append({"name": m, "provider": "ollama"})
+    elif args.provider == "vllm":
+        if args.models:
+            for m in args.models:
+                models_to_eval.append({"name": m, "provider": "vllm"})
+        else:
+            for m in VLLM_MODELS:
+                models_to_eval.append({"name": m, "provider": "vllm"})
     elif args.provider == "openai":
         models_to_eval.append({"name": "gpt-5", "provider": "openai"})
         models_to_eval.append({"name": "gpt-5-mini-2025-08-07", "provider": "openai"})
@@ -1105,6 +1479,13 @@ def main():
     elif args.provider == "google":
         models_to_eval.append({"name": "gemini-3.0-flash", "provider": "google"})
         models_to_eval.append({"name": "gemini-2.5-pro", "provider": "google"})
+    elif args.provider == "together":
+        if args.models:
+            for m in args.models:
+                models_to_eval.append({"name": m, "provider": "together"})
+        else:
+            for m in TOGETHER_MODELS:
+                models_to_eval.append({"name": m, "provider": "together"})
 
     print(f"\nModels to evaluate: {[m['name'] for m in models_to_eval]}")
 
@@ -1156,6 +1537,7 @@ def main():
                         timeout=args.timeout,
                         prompt_variant=variant,
                         batch_judge=args.batch_judge,
+                        output_dir=args.output,
                     )
                 else:
                     result = evaluate_model(
@@ -1170,6 +1552,7 @@ def main():
                         timeout=args.timeout,
                         prompt_variant=variant,
                         batch_judge=args.batch_judge,
+                        output_dir=args.output,
                     )
                 # Tag the result with the variant for tracking
                 result.model_name = f"{result.model_name} [{variant}]"

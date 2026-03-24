@@ -116,7 +116,8 @@ class BatchProcessor(ABC):
             if progress_callback:
                 progress_callback(result.status, result.completed_requests, result.total_requests)
 
-            print(f"  Status: {result.status} ({result.completed_requests}/{result.total_requests})")
+            failed_str = f", {result.failed_requests} failed" if result.failed_requests else ""
+            print(f"  Status: {result.status} ({result.completed_requests}/{result.total_requests}{failed_str})")
 
             if result.status == "completed":
                 return self.get_batch_results(batch_id)
@@ -252,16 +253,21 @@ class OpenAIBatchProcessor(BatchProcessor):
         # Create JSONL file with requests
         with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
             for req in requests:
-                # Build request body - gpt-5 doesn't support temperature
+                # Build request body - gpt-5 family uses max_completion_tokens, no temperature
+                is_gpt5 = "gpt-5" in model.lower()
                 body = {
                     "model": model,
                     "messages": [
                         {"role": "system", "content": req.system_prompt},
                         {"role": "user", "content": req.prompt}
                     ],
-                    "max_tokens": req.max_tokens,
                 }
-                if "gpt-5" not in model.lower():
+                if is_gpt5:
+                    # GPT-5 family uses reasoning tokens that count against the limit,
+                    # so we need a much higher cap (16k) to leave room for actual output
+                    body["max_completion_tokens"] = max(req.max_tokens, 16384)
+                else:
+                    body["max_tokens"] = req.max_tokens
                     body["temperature"] = req.temperature
 
                 request_obj = {
@@ -324,6 +330,17 @@ class OpenAIBatchProcessor(BatchProcessor):
         batch = self.client.batches.retrieve(batch_id)
 
         if not batch.output_file_id:
+            # Check error file for details
+            if batch.error_file_id:
+                err_content = self.client.files.content(batch.error_file_id)
+                first_line = err_content.text.strip().split("\n")[0]
+                err_data = json.loads(first_line)
+                err_msg = err_data.get("response", {}).get("body", {}).get("error", {}).get("message", "unknown")
+                failed = batch.request_counts.failed if batch.request_counts else 0
+                raise ValueError(
+                    f"Batch {batch_id}: all {failed} requests failed. "
+                    f"Error: {err_msg}"
+                )
             raise ValueError(f"Batch {batch_id} has no output file")
 
         # Download results

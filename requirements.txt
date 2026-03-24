@@ -1,27 +1,26 @@
 # SecMutBench Requirements
-# Core dependencies for running the benchmark
+# Requires Python 3.11 (MutPy incompatible with 3.12+)
 
 # Testing
 pytest>=7.0.0
 pytest-cov>=4.0.0
 coverage>=7.0.0
-hypothesis>=6.0.0
 
 # Static Security Analysis
 bandit>=1.7.0
 
 # Data handling
-datasets>=2.14.0  # For downloading SecurityEval/CyberSecEval
+datasets>=2.14.0
 
-# Optional: LLM evaluation clients
+# LLM evaluation clients (optional — needed for LLM baselines and judge)
 openai>=1.0.0
 anthropic>=0.18.0
 
-# Cryptography testing
+# Cryptography
 pycryptodome>=3.19.0
 cryptography>=41.0.0
 
-# HTTP / Web
+# HTTP / Web / XML
 requests>=2.31.0
 lxml>=4.9.0
 
@@ -31,10 +30,7 @@ pyyaml>=6.0.0
 # Authentication / JWT
 pyjwt>=2.8.0
 bcrypt>=4.0.0
-
-# Password hashing
 argon2-cffi>=23.1.0
 
 # Utilities
 tqdm>=4.65.0
-wrapt-timeout-decorator>=1.4.0

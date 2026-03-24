@@ -25,6 +25,8 @@
 #   --ablation           Shortcut for --prompt-variant all (run all 3 variants)
 #   --skip-invalid       Skip samples that fail validation
 #   --static-analysis    Run Bandit/Semgrep static analysis baseline
+#   --vllm-base-url URL  vLLM server URL (default: http://localhost:8000/v1)
+#   --vllm-api-key KEY   vLLM API key (default: secmutbench2026)
 #   --batch              Use batch API for 50% cost savings (Anthropic/OpenAI)
 #   --batch-judge        Use batch API for LLM-as-Judge (50% cost savings)
 #   --version            Show version information
@@ -49,6 +51,8 @@ PROMPT_VARIANT=${PROMPT_VARIANT:-"full"}
 SKIP_INVALID=${SKIP_INVALID:-false}
 BATCH_MODE=${BATCH_MODE:-false}
 BATCH_JUDGE=${BATCH_JUDGE:-false}
+VLLM_BASE_URL=${VLLM_BASE_URL:-"http://localhost:8000/v1"}
+VLLM_API_KEY=${VLLM_API_KEY:-"secmutbench2026"}
 
 # Colors
 RED='\033[0;31m'
@@ -72,6 +76,8 @@ while [[ $# -gt 0 ]]; do
         --prompt-variant) PROMPT_VARIANT="$2"; shift 2 ;;
         --ablation) PROMPT_VARIANT="all"; shift ;;
         --skip-invalid) SKIP_INVALID=true; shift ;;
+        --vllm-base-url) VLLM_BASE_URL="$2"; shift 2 ;;
+        --vllm-api-key) VLLM_API_KEY="$2"; shift 2 ;;
         --batch) BATCH_MODE=true; shift ;;
         --batch-judge) BATCH_JUDGE=true; shift ;;
         --version)
@@ -146,6 +152,28 @@ elif [ "$MODEL_PROVIDER" = "google" ]; then
     [ -z "$GOOGLE_API_KEY" ] && [ -f ".env" ] && export $(grep -v '^#' .env | xargs)
     [ -z "$GOOGLE_API_KEY" ] && echo -e "${RED}ERROR: GOOGLE_API_KEY not set${NC}" && exit 1
     echo -e "  ${GREEN}✓${NC} Google API key"
+elif [ "$MODEL_PROVIDER" = "vllm" ]; then
+    if ! curl -s "$VLLM_BASE_URL/models" -H "Authorization: Bearer $VLLM_API_KEY" > /dev/null 2>&1; then
+        echo -e "${RED}ERROR: vLLM server not reachable at $VLLM_BASE_URL${NC}"
+        echo -e "${YELLOW}Make sure the SLURM job is running and SSH tunnel is open${NC}"
+        exit 1
+    fi
+    echo -e "  ${GREEN}✓${NC} vLLM server: $VLLM_BASE_URL"
+    for MODEL in $MODELS; do
+        echo -e "  ${GREEN}✓${NC} Model: $MODEL"
+    done
+elif [ "$MODEL_PROVIDER" = "together" ]; then
+    [ -z "$TOGETHER_API_KEY" ] && [ -f ".env" ] && export $(grep -v '^#' .env | xargs)
+    [ -z "$TOGETHER_API_KEY" ] && echo -e "${RED}ERROR: TOGETHER_API_KEY not set${NC}" && exit 1
+    echo -e "  ${GREEN}✓${NC} Together.ai API key"
+elif [ "$MODEL_PROVIDER" = "zhipu" ]; then
+    [ -z "$ZHIPU_API_KEY" ] && [ -f ".env" ] && export $(grep -v '^#' .env | xargs)
+    [ -z "$ZHIPU_API_KEY" ] && echo -e "${RED}ERROR: ZHIPU_API_KEY not set${NC}" && exit 1
+    echo -e "  ${GREEN}✓${NC} Zhipu AI API key"
+elif [ "$MODEL_PROVIDER" = "fireworks" ]; then
+    [ -z "$FIREWORKS_API_KEY" ] && [ -f ".env" ] && export $(grep -v '^#' .env | xargs)
+    [ -z "$FIREWORKS_API_KEY" ] && echo -e "${RED}ERROR: FIREWORKS_API_KEY not set${NC}" && exit 1
+    echo -e "  ${GREEN}✓${NC} Fireworks AI API key"
 fi
 
 # Check API keys for judge
@@ -206,6 +234,9 @@ BATCH_FLAG=""
 BATCH_JUDGE_FLAG=""
 [ "$BATCH_JUDGE" = true ] && BATCH_JUDGE_FLAG="--batch-judge" && echo "  Batch Judge: enabled (50% cost savings)"
 
+VLLM_FLAGS=""
+[ "$MODEL_PROVIDER" = "vllm" ] && VLLM_FLAGS="--vllm-base-url $VLLM_BASE_URL --vllm-api-key $VLLM_API_KEY" && echo "  vLLM: $VLLM_BASE_URL"
+
 mkdir -p results
 
 # Run evaluation for each model
@@ -215,15 +246,15 @@ for MODEL in $MODELS; do
 
     if [ "$JUDGE_PROVIDER" = "both" ]; then
         python baselines/run_llm_baselines.py --models "$MODEL" --provider "$MODEL_PROVIDER" \
-            --dataset "$DATASET_PATH" --use-judge --judge-provider openai $MAX_FLAG $SHUFFLE_FLAG $PROMPT_FLAG $SKIP_INVALID_FLAG $BATCH_FLAG $BATCH_JUDGE_FLAG --output results
+            --dataset "$DATASET_PATH" --use-judge --judge-provider openai $MAX_FLAG $SHUFFLE_FLAG $PROMPT_FLAG $SKIP_INVALID_FLAG $BATCH_FLAG $BATCH_JUDGE_FLAG $VLLM_FLAGS --output results
         python baselines/run_llm_baselines.py --models "$MODEL" --provider "$MODEL_PROVIDER" \
-            --dataset "$DATASET_PATH" --use-judge --judge-provider anthropic $MAX_FLAG $SHUFFLE_FLAG $PROMPT_FLAG $SKIP_INVALID_FLAG $BATCH_FLAG $BATCH_JUDGE_FLAG --output results
+            --dataset "$DATASET_PATH" --use-judge --judge-provider anthropic $MAX_FLAG $SHUFFLE_FLAG $PROMPT_FLAG $SKIP_INVALID_FLAG $BATCH_FLAG $BATCH_JUDGE_FLAG $VLLM_FLAGS --output results
     elif [ "$JUDGE_PROVIDER" = "none" ]; then
         python baselines/run_llm_baselines.py --models "$MODEL" --provider "$MODEL_PROVIDER" \
-            --dataset "$DATASET_PATH" $MAX_FLAG $SHUFFLE_FLAG $PROMPT_FLAG $SKIP_INVALID_FLAG $BATCH_FLAG --output results
+            --dataset "$DATASET_PATH" $MAX_FLAG $SHUFFLE_FLAG $PROMPT_FLAG $SKIP_INVALID_FLAG $BATCH_FLAG $VLLM_FLAGS --output results
     else
         python baselines/run_llm_baselines.py --models "$MODEL" --provider "$MODEL_PROVIDER" \
-            --dataset "$DATASET_PATH" --use-judge --judge-provider "$JUDGE_PROVIDER" $MAX_FLAG $SHUFFLE_FLAG $PROMPT_FLAG $SKIP_INVALID_FLAG $BATCH_FLAG $BATCH_JUDGE_FLAG --output results
+            --dataset "$DATASET_PATH" --use-judge --judge-provider "$JUDGE_PROVIDER" $MAX_FLAG $SHUFFLE_FLAG $PROMPT_FLAG $SKIP_INVALID_FLAG $BATCH_FLAG $BATCH_JUDGE_FLAG $VLLM_FLAGS --output results
     fi
 done
 
