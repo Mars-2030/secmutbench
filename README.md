@@ -252,16 +252,6 @@ docker run secmutbench --model reference
 docker run secmutbench --difficulty easy --cwe CWE-89
 ```
 
-## Citation
-
-```bibtex
-@inproceedings{secmutbench2026,
-  title={SecMutBench: A Benchmark for Evaluating LLM Security Test Generation via Mutation Testing},
-  booktitle={Proceedings of the ACM International Conference on AI-Powered Software (AIWare)},
-  year={2026}
-}
-```
-
 ## License
 
 MIT License
