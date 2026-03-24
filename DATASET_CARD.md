@@ -4,7 +4,6 @@ language:
 license: mit
 task_categories:
 - text-generation
-- text2text-generation
 tags:
 - security
 - mutation-testing
@@ -21,17 +20,13 @@ configs:
 - config_name: default
   data_files:
   - split: all
-    path: data/dataset2.json
+    path: data/dataset.json
   - split: easy
     path: data/splits/easy.json
   - split: medium
     path: data/splits/medium.json
   - split: hard
     path: data/splits/hard.json
-- config_name: original
-  data_files:
-  - split: all
-    path: data/dataset.json
 dataset_info:
   features:
   - name: id
@@ -42,20 +37,44 @@ dataset_info:
     dtype: string
   - name: difficulty
     dtype: string
-  - name: source_type
-    dtype: string
-  - name: secure_code
-    dtype: string
-  - name: insecure_code
-    dtype: string
-  - name: security_tests
-    dtype: string
-  - name: functional_tests
+  - name: prompt
     dtype: string
   - name: entry_point
     dtype: string
+  - name: insecure_code
+    dtype: string
+  - name: secure_code
+    dtype: string
+  - name: functional_tests
+    dtype: string
+  - name: security_tests
+    dtype: string
   - name: mutation_operators
     sequence: string
+  - name: source
+    dtype: string
+  - name: original_id
+    dtype: string
+  - name: quality
+    struct:
+    - name: quality_level
+      dtype: string
+    - name: generation_method
+      dtype: string
+    - name: source_dataset
+      dtype: string
+    - name: transformation_applied
+      dtype: bool
+    - name: validation_passed
+      dtype: bool
+    - name: reviewer
+      dtype: string
+    - name: review_date
+      dtype: string
+    - name: notes
+      sequence: string
+    - name: confidence
+      dtype: float64
   - name: mutants
     sequence:
       struct:
@@ -67,19 +86,21 @@ dataset_info:
         dtype: string
       - name: mutated_code
         dtype: string
+      - name: variant_type
+        dtype: string
       - name: mutant_category
         dtype: string
-  - name: source
+  - name: source_type
     dtype: string
   splits:
   - name: all
     num_examples: 339
   - name: easy
-    num_examples: 136
+    num_examples: 172
   - name: medium
-    num_examples: 101
+    num_examples: 143
   - name: hard
-    num_examples: 102
+    num_examples: 25
 ---
 
 # SecMutBench
