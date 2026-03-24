@@ -194,13 +194,13 @@ Each sample contains:
 from datasets import load_dataset
 
 # Load full dataset (v2.8.0)
-dataset = load_dataset("secmutbench/SecMutBench")
+dataset = load_dataset("Mars203020/secmutbench")
 
 # Load specific split
-easy = load_dataset("secmutbench/SecMutBench", split="easy")
+easy = load_dataset("Mars203020/secmutbench", split="easy")
 
 # Load original dataset (v2.6.2)
-original = load_dataset("secmutbench/SecMutBench", "original")
+original = load_dataset("Mars203020/secmutbench", "original")
 ```
 
 ### Local Usage
@@ -262,16 +262,9 @@ SecMutBench employs contamination mitigation strategies:
 4. **Structural Deduplication**: Max 2 samples per structural pattern
 5. **Contamination Audit**: N-gram overlap analysis available
 
-## Citation
+## Submission
 
-```bibtex
-@inproceedings{secmutbench2025,
-  title={SecMutBench: A Benchmark for Evaluating LLM Security Test Generation via Mutation Testing},
-  author={SecMutBench Team},
-  booktitle={Proceedings},
-  year={2025}
-}
-```
+Submitted to [ACM AIWare 2026 — Benchmark and Dataset Track](https://2026.aiwareconf.org/track/aiware-2026-benchmark---dataset-track). Paper under review. Author names withheld for double-blind review.
 
 ## License
 
@@ -279,6 +272,6 @@ MIT License
 
 ## Links
 
-- [GitHub Repository](https://github.com/secmutbench/SecMutBench)
-- [Documentation](https://github.com/secmutbench/SecMutBench#readme)
-- [Croissant Metadata](https://github.com/secmutbench/SecMutBench/blob/main/croissant.json)
+- [GitHub Repository](https://github.com/Mars-2030/secmutbench)
+- [HuggingFace Dataset](https://huggingface.co/datasets/Mars203020/secmutbench)
+- [Croissant Metadata](https://github.com/Mars-2030/secmutbench/blob/main/croissant.json)

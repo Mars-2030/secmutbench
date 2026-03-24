@@ -216,12 +216,12 @@ Yes, the dataset is publicly available under MIT License.
 
 ### How will the dataset be distributed?
 
-- GitHub repository
-- HuggingFace datasets (planned)
+- [GitHub repository](https://github.com/Mars-2030/secmutbench)
+- [HuggingFace Datasets](https://huggingface.co/datasets/Mars203020/secmutbench)
 
 ### When will the dataset be distributed?
 
-Available upon publication.
+Available now.
 
 ### Will the dataset be distributed under a copyright or intellectual property license?
 
@@ -263,16 +263,9 @@ Yes, via Git tags and releases. The original dataset (v2.6.2) remains available 
 
 ---
 
-## Citation
+## Submission
 
-```bibtex
-@inproceedings{secmutbench2025,
-  title={SecMutBench: A Benchmark for Evaluating LLM Security Test Generation via Mutation Testing},
-  author={SecMutBench Team},
-  booktitle={Proceedings},
-  year={2025}
-}
-```
+Submitted to [ACM AIWare 2026 — Benchmark and Dataset Track](https://2026.aiwareconf.org/track/aiware-2026-benchmark---dataset-track). Paper under review. Author names withheld for double-blind review.
 
 ## References
 
