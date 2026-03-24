@@ -6,7 +6,7 @@
 
 A benchmark for evaluating LLM-generated security tests using mutation testing.
 
-**Version:** 2.8.0
+**Version:** 2.8.0 | **Dataset:** [HuggingFace](https://huggingface.co/datasets/Mars203020/secmutbench)
 
 ## Overview
 
